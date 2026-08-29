@@ -360,6 +360,10 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             return 6, 254
         return 1, 100
 
+    @property
+    def supports_brightness(self) -> bool:
+        return self.model != "H6125" or (self.hw_version is not None and self.hw_version.split(".", 1)[0] == "1")
+
     def _brightness_value_from_percent(self, percent: int) -> int:
         minimum, maximum = self._brightness_raw_range()
         percent = max(1, min(100, percent))
@@ -379,6 +383,8 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
         if self.model == "H6125":
             if self.hw_version is None:
                 raise RuntimeError("H6125 hardware version is required before changing brightness")
+            if not self.supports_brightness:
+                raise RuntimeError(f"H6125 brightness is not enabled for hardware {self.hw_version}")
             return build_h6125_brightness_value(self._brightness_value_from_percent(percent))
         return build_brightness(percent, self.model)
 
@@ -1718,6 +1724,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
         )
         if domain is StatusDomain.COLOUR_MODE and not self.profile.supports_color_mode_readback:
             return
+        self._last_rx_monotonic = time.monotonic()
         try:
             observed: tuple[str, ...] = ()
             if self.profile.boolean_controls:

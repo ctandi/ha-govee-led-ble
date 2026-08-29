@@ -234,13 +234,18 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
         supported_color_modes = self.supported_color_modes
         self._attr_min_color_temp_kelvin = coordinator.profile.min_color_temp_kelvin
         self._attr_max_color_temp_kelvin = coordinator.profile.max_color_temp_kelvin
+        self._attr_supported_color_modes = supported_color_modes
         self._attr_color_mode = (
             ColorMode.RGB
             if ColorMode.RGB in supported_color_modes
             else ColorMode.COLOR_TEMP
             if ColorMode.COLOR_TEMP in supported_color_modes
+            else ColorMode.BRIGHTNESS
+            if ColorMode.BRIGHTNESS in supported_color_modes
             else ColorMode.ONOFF
         )
+        self._attr_min_color_temp_kelvin = coordinator.profile.min_color_temp_kelvin
+        self._attr_max_color_temp_kelvin = coordinator.profile.max_color_temp_kelvin
         self._config_entry_id = config_entry_id
         self._effect_backend = effect_backend
         self._library_snapshot = (
@@ -1118,6 +1123,7 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
                 await power_on()
                 await self._refresh_with_retry(expected_on=True, retry_command=power_on)
             if ATTR_BRIGHTNESS in kwargs:
+                self._require_support("brightness", supported=self.coordinator.supports_brightness)
                 pct = max(1, min(100, round(kwargs[ATTR_BRIGHTNESS] * 100 / 255)))
 
                 async def apply_brightness() -> None:
