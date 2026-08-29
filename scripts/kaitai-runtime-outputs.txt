@@ -23,6 +23,8 @@ h617a_command_ack.py
 h617a_control_payload.py
 h66a0_video_command.py
 h66a0_video_status.py
+h6125_brightness_write.py
+h6125_colour_mode_query.py
 h6199_command_write.py
 h6199_command_ack.py
 h6199_control_payload.py

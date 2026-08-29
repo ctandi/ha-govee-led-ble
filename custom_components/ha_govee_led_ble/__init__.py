@@ -8,6 +8,7 @@ from homeassistant.components import bluetooth, frontend
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -23,6 +24,8 @@ from .const import (
     CONF_H6102_APP_FIRMWARE,
     CONF_H6102_PACT,
     CONF_MODEL,
+    CONF_PACT_CODE,
+    CONF_PACT_TYPE,
     CONF_PREFIX_EFFECT_NAMES,
     DOMAIN,
     MODEL_PROFILES,
@@ -34,6 +37,7 @@ from .const import (
     prefix_effect_names_from_options,
     resolve_model,
     supported_effect_categories,
+    version_at_least,
 )
 from .coordinator import GoveeBLECoordinator, clear_availability_log_state
 from .editor import EDITOR_PANEL_PATH, async_register_editor_panel, editor_url
@@ -89,6 +93,10 @@ _LOGGER = logging.getLogger(__name__)
 
 def _unsupported_model_issue_id(entry: GoveeBLEConfigEntry) -> str:
     return f"unsupported_model_{entry.entry_id}"
+
+
+def _unsupported_version_issue_id(entry: GoveeBLEConfigEntry) -> str:
+    return f"unsupported_version_{entry.entry_id}"
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -204,6 +212,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeBLEConfigEntry) -> 
     ir.async_delete_issue(hass, DOMAIN, issue_id)
     configured_firmware = entry.data.get(CONF_H6102_APP_FIRMWARE)
     h6102_firmware = configured_firmware if model == "H6102" and isinstance(configured_firmware, str) else None
+    coordinator_kwargs: dict[str, Any] = {}
+    pact_type = entry.data.get(CONF_PACT_TYPE)
+    pact_code = entry.data.get(CONF_PACT_CODE)
+    if isinstance(pact_type, int) and not isinstance(pact_type, bool):
+        coordinator_kwargs["pact_type"] = pact_type
+    if isinstance(pact_code, int) and not isinstance(pact_code, bool):
+        coordinator_kwargs["pact_code"] = pact_code
     coordinator = GoveeBLECoordinator(
         hass,
         entry.unique_id,
@@ -216,8 +231,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeBLEConfigEntry) -> 
         h6102_firmware=h6102_firmware,
         h6102_firmware_source="configured" if h6102_firmware is not None else None,
         h6102_pact=entry.data.get(CONF_H6102_PACT) if model == "H6102" else None,
+        **coordinator_kwargs,
     )
     await coordinator.async_config_entry_first_refresh()
+    version_issue_id = _unsupported_version_issue_id(entry)
+    profile = coordinator.profile
+    if profile.minimum_firmware is not None or profile.minimum_hardware is not None:
+        if not await coordinator.async_refresh_identity():
+            await coordinator.disconnect()
+            raise ConfigEntryNotReady(f"{model} did not report firmware and hardware versions")
+        if model == "H6125" and not await coordinator.refresh_state(refresh_brightness=True):
+            await coordinator.disconnect()
+            raise ConfigEntryNotReady("H6125 did not report its brightness register")
+        firmware_supported = (
+            profile.minimum_firmware is None
+            or coordinator.fw_version is not None
+            and version_at_least(coordinator.fw_version, profile.minimum_firmware)
+        )
+        hardware_supported = (
+            profile.minimum_hardware is None
+            or coordinator.hw_version is not None
+            and version_at_least(coordinator.hw_version, profile.minimum_hardware)
+        )
+        if not firmware_supported or not hardware_supported:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                version_issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="unsupported_version",
+                translation_placeholders={
+                    "model": model,
+                    "firmware": coordinator.fw_version or "unknown",
+                    "minimum_firmware": profile.minimum_firmware or "any",
+                    "hardware": coordinator.hw_version or "unknown",
+                    "minimum_hardware": profile.minimum_hardware or "any",
+                },
+            )
+            await coordinator.disconnect()
+            return False
+    ir.async_delete_issue(hass, DOMAIN, version_issue_id)
     entry.runtime_data = coordinator
     if effect_backend := get_effect_backend(hass):
         await effect_backend.preview.async_load_device(entry.entry_id)
@@ -288,6 +342,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: GoveeBLEConfigEntry) ->
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: GoveeBLEConfigEntry) -> None:
+    ir.async_delete_issue(hass, DOMAIN, _unsupported_model_issue_id(entry))
+    ir.async_delete_issue(hass, DOMAIN, _unsupported_version_issue_id(entry))
     effect_backend = get_effect_backend(hass)
     if effect_backend is not None:
         await asyncio.gather(
@@ -298,7 +354,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: GoveeBLEConfigEntry) ->
             effect_backend.deployments.async_delete_device(entry.entry_id),
             effect_backend.user_state.async_clear_config_entry(entry.entry_id),
         )
-    ir.async_delete_issue(hass, DOMAIN, _unsupported_model_issue_id(entry))
     if entry.unique_id is not None:
         clear_availability_log_state(hass, entry.unique_id)
         clear_stale_gatt_recovery(hass, entry.unique_id)

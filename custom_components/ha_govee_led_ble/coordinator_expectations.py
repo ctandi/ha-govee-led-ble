@@ -4,7 +4,12 @@ from typing import Any
 
 from .const import MUSIC_MODE_SLUGS, ModelProfile, get_profile
 from .coordinator_status import ParsedMode
-from .generated_protocol_adapter import parse_command, parse_video_command, video_parameters_from_detail
+from .generated_protocol_adapter import (
+    parse_command,
+    parse_h6125_brightness_write,
+    parse_video_command,
+    video_parameters_from_detail,
+)
 from .light_commands import parse_static_write
 from .scenes import MODEL_SCENES
 
@@ -23,6 +28,8 @@ def expectations_from_packet(
 ) -> dict[str, Any]:
     """Map an outgoing command to the optimistic fields its replies should confirm."""
     profile = profile or get_profile(model)
+    if model == "H6125" and (brightness := parse_h6125_brightness_write(packet)) is not None:
+        return {"brightness_pct": int(brightness.value)}
     video = parse_video_command(packet, model, profile=profile)
     if video is not None:
         detail = video.detail
