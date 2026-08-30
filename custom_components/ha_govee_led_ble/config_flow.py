@@ -63,9 +63,9 @@ def _normalize_manual_address(address: str) -> str:
 
 
 class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 8
+    VERSION = 9
 
-    _discovered: dict[str, str]
+    _discovered: dict[str, Any]
 
     @staticmethod
     @callback

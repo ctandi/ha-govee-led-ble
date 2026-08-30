@@ -33,13 +33,13 @@ from .ble_connection import (
 from .ble_device_resolver import BLEDeviceResolver
 from .const import (
     DOMAIN,
-    MUSIC_MODE_SLUGS,
     ModelProfile,
     ReadDomain,
     default_effect_categories,
     default_effect_families,
     device_profile,
     get_profile,
+    music_mode_code,
 )
 from .control_arbiter import BLEControlArbiter, ControlIntent, PreviewAdmission, async_control_intent
 from .coordinator_dreamview import _DreamviewMixin
@@ -147,6 +147,7 @@ _CORE_STATE_FIELDS = (
     "diy_code",
 )
 _COLOR_MODE_FIELDS = (
+    "color_temp_kelvin",
     "video_full_screen",
     "video_parameters",
     "video_saturation",
@@ -311,8 +312,8 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
         self.music_hopping_brightness = 50
         self.music_piano_key_count = 15
         self.music_fountain_direction = "clockwise"
-        self.music_daynight_segments = 1
-        self.music_daynight_speed = 10
+        self.music_daynight_segments = 7 if model == "H6125" else 1
+        self.music_daynight_speed = 20 if model == "H6125" else 10
         self.music_daynight_gradient = False
         self._initialized_music_parameters: set[str] = set()
         for variant in self.profile.music_variants:
@@ -417,7 +418,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             diy_code=self.diy_code,
             music_mode=self.music_mode,
             music_model=self.model,
-            music_parameters=capture_music_parameters(self, self.profile, self.music_mode),
+            music_parameters=capture_music_parameters(self, self.profile, self.music_mode, self.model),
             music_palette=self.music_palette,
             music_body=self.music_body,
             video_mode=self.video_mode,
@@ -495,7 +496,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                 raise ValueError("music recovery model does not match device")
             if state.music_mode not in self.profile.music_modes:
                 return False
-            variant = music_variant(self.profile, MUSIC_MODE_SLUGS[state.music_mode])
+            variant = music_variant(self.profile, music_mode_code(self.model, state.music_mode))
             # Legacy snapshots retain style across modes even when the active selector
             # has no style byte semantics. Do not reinterpret that retained value.
             music_calm = state.music_calm if variant and variant.supports_style else False
@@ -505,6 +506,21 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                     return False
                 music_writes = prepare_music_body_writes(
                     self.model, state.music_mode, state.music_sensitivity, state.music_body, profile=self.profile
+                )
+            elif variant and variant.layout == "h6125_music_body":
+                music_parameters = (
+                    dict(state.music_parameters)
+                    if state.music_parameters is not None
+                    else capture_music_parameters(state, self.profile, state.music_mode, self.model) or {}
+                )
+                music_writes = prepare_music_profile_writes(
+                    self.model,
+                    state.music_mode,
+                    state.music_sensitivity,
+                    None,
+                    music_calm,
+                    music_parameters,
+                    profile=self.profile,
                 )
             else:
                 music_writes = prepare_music_profile_writes(
@@ -671,6 +687,8 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                         or self.profile.command_grammar != "H617A"
                     )
                 )
+                or self.model == "H6125"
+                and state.diy_code != 0x00FE
             ):
                 return False
             activation = (
@@ -679,7 +697,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                 else build_h617a_diy_activation(state.diy_code)
             )
             await self.send_command(build_power(True, self.model))
-            await self.send_command(build_brightness(state.brightness_pct, self.model))
+            await self.send_command(self.build_brightness_command(state.brightness_pct))
             await self.send_command(activation, state_values={"diy_code": state.diy_code})
             return (
                 await self.async_observe_effect({"is_on": True, "diy_code": state.diy_code}) is True
@@ -704,7 +722,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                 if state.scene_code == overwritten_diy_code:
                     return False
                 await self.send_command(build_power(True, self.model))
-                await self.send_command(build_brightness(state.brightness_pct, self.model))
+                await self.send_command(self.build_brightness_command(state.brightness_pct))
                 await self.send_command(build_scene_activation(self.model, state.scene_code, profile=self.profile))
                 await self.refresh_state(
                     expected_on=True, expected_brightness=state.brightness_pct, expected_scene_code=state.scene_code
@@ -731,7 +749,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             else:
                 return False
             await self.send_command(build_power(True, self.model))
-            await self.send_command(build_brightness(state.brightness_pct, self.model))
+            await self.send_command(self.build_brightness_command(state.brightness_pct))
             # A catalogue body/default speed is not the original authored resident body.
             await self.send_command(build_scene_activation(self.model, scene.code, scene.music_code))
             return (
@@ -755,16 +773,16 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             def guard_music_recovery() -> None:
                 if (
                     state.music_mode not in self.profile.music_modes
-                    or music_variant(self.profile, MUSIC_MODE_SLUGS[state.music_mode]) != variant
+                    or music_variant(self.profile, music_mode_code(self.model, state.music_mode)) != variant
                 ):
                     raise ValueError("Music variant changed before recovery; refresh and retry")
 
             await self.send_command(
-                build_brightness(state.brightness_pct, self.model), write_guard=guard_music_recovery
+                self.build_brightness_command(state.brightness_pct), write_guard=guard_music_recovery
             )
             await self.async_write_music_sequence(
                 music_writes,
-                mode_code=MUSIC_MODE_SLUGS[state.music_mode],
+                mode_code=music_mode_code(self.model, state.music_mode),
                 physical_ic_count=physical_ic_count,
                 intent=ControlIntent.APPLY,
             )
@@ -784,7 +802,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             )
         if state.mode == "video" and state.video_mode in {"movie", "game"} and self.profile.supports_video_mode:
             await self.send_command(build_power(True, self.model))
-            await self.send_command(build_brightness(state.brightness_pct, self.model))
+            await self.send_command(self.build_brightness_command(state.brightness_pct))
             for field, control in (
                 ("full_screen", "capture_region"),
                 ("saturation", "saturation"),
@@ -834,15 +852,12 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             ):
                 colour_groups.setdefault(rgb, []).append(index)
                 brightness_groups.setdefault(brightness, []).append(index)
-            kelvin_restore = state.color_temp_kelvin is not None and self.profile.static_readback_kelvin
-            if (
-                kelvin_restore
-                and state.color_temp_kelvin is not None
-                and state.segment_colors != (kelvin_to_rgb(state.color_temp_kelvin),) * self.profile.segment_count
-            ):
-                # Whole-device Kelvin cannot reproduce a simultaneously captured
-                # different RGB layout. Preserve it instead of overwriting it.
-                return False
+            kelvin_restore = (
+                state.color_temp_kelvin is not None
+                and self.profile.static_readback_kelvin
+                and state.segment_colors
+                == (kelvin_to_rgb(state.color_temp_kelvin, self.model),) * self.profile.segment_count
+            )
             packets = (
                 [build_color_temp(state.color_temp_kelvin, self.model, profile=self.profile)]
                 if kelvin_restore and state.color_temp_kelvin is not None
@@ -853,7 +868,11 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                 build_segment_brightness(segments, brightness, self.model, profile=self.profile)
                 for brightness, segments in brightness_groups.items()
             ]
-            for packet in (build_power(True, self.model), build_brightness(state.brightness_pct, self.model), *packets):
+            for packet in (
+                build_power(True, self.model),
+                self.build_brightness_command(state.brightness_pct),
+                *packets,
+            ):
                 await self.send_command(packet)
             if state.static_gradual is not None:
                 if "gradual" not in self.profile.boolean_controls:
@@ -1434,6 +1453,11 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                     self.color_temp_kelvin = None
                     self.color_temp_kelvin_source = "initial"
                 observed.append("rgb_color")
+        elif self.color_mode is ParsedMode.COLOUR and self.color_temp_kelvin is not None:
+            if self._accept_expected("color_temp_kelvin", None):
+                self.color_temp_kelvin = None
+                self.color_temp_kelvin_source = "initial"
+                observed.append("color_temp_kelvin")
         return tuple(observed)
 
     def _arm_expected(self, packet: bytes) -> None:
@@ -1574,6 +1598,23 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                 if self._accept_expected("music_color", None):
                     self.music_color = None
                     observed.append("music_color")
+            if (
+                self.model == "H6125"
+                and parsed.mode is ParsedMode.COLOUR
+                and parsed.color_temp_kelvin is None
+                and self._accept_expected("color_temp_kelvin", None)
+            ):
+                self.color_temp_kelvin = None
+                self.color_temp_kelvin_source = "initial"
+                observed.append("color_temp_kelvin")
+            if (
+                self.model == "H6125"
+                and parsed.mode is ParsedMode.COLOUR
+                and parsed.color_temp_kelvin is None
+                and self._accept_expected("color_temp_kelvin", None)
+            ):
+                self.color_temp_kelvin = None
+                observed.append("color_temp_kelvin")
             for attr in _COLOR_MODE_FIELDS:
                 if attr == "music_color" and not parsed.music_color_present:
                     continue
@@ -2590,7 +2631,6 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
         query_color = self.profile.supports_color_mode_readback and (
             expected_zero_kelvin or expected_music_auto_color or any(value is not None for value in color_expectations)
         )
-        probe_color = self.profile.query_color_mode_for_diagnostics and refresh_all
         display_settings = (
             frozenset({"white_balance", "blank_screen"})
             | (
@@ -2739,7 +2779,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                         ok = await self._send_state_queries(
                             query_power=query_power,
                             query_brightness=query_brightness,
-                            query_color_mode=query_color or probe_color,
+                            query_color_mode=query_color,
                             query_white_balance=query_white_balance,
                             query_blank_screen=query_blank_screen,
                             query_black_border=query_black_border,

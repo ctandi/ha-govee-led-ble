@@ -29,6 +29,8 @@ from .effect_commands import (
     build_h617a_diy_multi,
     build_h617a_diy_painted,
     build_h617a_diy_single,
+    build_h6125_diy_multi,
+    build_h6125_diy_single,
     build_h6199_palette_diy,
 )
 from .effect_contracts import (
@@ -353,6 +355,8 @@ def compile_effect(
             diy_code = resolve_diy_code(item, diy_code, model=model)
         if diy_code is None:
             raise ValueError("H617A custom-effect compilation requires a DIY code")
+        if model == "H6125":
+            return compile_h6125_type04(item, diy_code)
         return compile_h617a(item, diy_code, model=model, profile=profile)
     if isinstance(item.content, PaletteDiyEffect):
         return compile_h6199(
@@ -423,17 +427,18 @@ def resolve_diy_code(
             else CapabilityWorkflow.MULTI
         )
         grammar = require_effect_route("H617A" if model is None else model, workflow, ("H617A", "H6099"))
-        code = (
-            (
-                H6099_DIY_APPLY_CODE
-                if grammar == "H6099"
-                else 800
-                if isinstance(content, PaintedEffect)
-                else H617A_TYPE04_APPLY_CODE
-            )
-            if requested is None
-            else requested
+        default_code = (
+            H6099_DIY_APPLY_CODE
+            if grammar == "H6099"
+            else 0x00FE
+            if model == "H6125"
+            else 800
+            if isinstance(content, PaintedEffect)
+            else H617A_TYPE04_APPLY_CODE
         )
+        code = default_code if requested is None else requested
+        if model == "H6125" and code != 0x00FE:
+            raise ValueError("H6125 Type04 effects use the latest-upload selector 0x00fe")
         if not isinstance(code, int) or isinstance(code, bool) or not 0 <= code <= 0xFFFF:
             raise ValueError("DIY code must be an integer from 0 to 65535")
         return code
@@ -656,6 +661,46 @@ def compile_h617a(
     )
 
 
+def compile_h6125_type04(item: LibraryItem, diy_code: int) -> CompiledEffect:
+    if diy_code != 0x00FE:
+        raise ValueError("H6125 Type04 effects use the latest-upload selector 0x00fe")
+
+    content = item.content
+    if isinstance(content, SingleEffect):
+        content_kind = "h617a_single"
+        upload = build_h6125_diy_single(
+            content.family,
+            content.variant,
+            content.speed,
+            content.palette,
+        )
+    elif isinstance(content, MultiEffect):
+        content_kind = "h617a_multi"
+        upload = build_h6125_diy_multi(
+            tuple((effect.family, effect.variant) for effect in content.effects),
+            content.speed,
+            content.palette,
+        )
+    else:
+        raise ValueError("unsupported H6125 Type04 effect content")
+
+    activation = build_h617a_diy_activation(diy_code)
+    packets = (*upload, activation)
+    return CompiledEffect(
+        item_id=str(item.id),
+        item_version=item.version,
+        model="H6125",
+        content_kind=content_kind,
+        diy_code=diy_code,
+        activation_mode=ActivationMode.CUSTOM,
+        expected_effect=None,
+        upload_packets=tuple(upload),
+        activation_packet=activation,
+        artifact_sha256=sha256(b"".join(packets)).hexdigest(),
+        evidence_codes=("effect_content_readback_unavailable",),
+    )
+
+
 def _paint_groups(segments: tuple[tuple[int, int, int] | None, ...]) -> tuple[DiyPaintGroup, ...]:
     grouped: dict[tuple[int, int, int], list[int]] = {}
     for index, colour in enumerate(segments):
@@ -756,9 +801,7 @@ def compile_application(
     if isinstance(item.content, VideoProfile):
         return compile_video_profile(item, model, profile=profile)
     if isinstance(item.content, PaintedEffect | SingleEffect | MultiEffect):
-        resolved = resolve_diy_code(item, diy_code, model=model)
-        if get_profile(model).effect_grammar == "H6099":
-            diy_code = resolved
+        diy_code = resolve_diy_code(item, diy_code, model=model)
         if diy_code is None:
             raise ValueError("custom-effect application requires a DIY code")
     return compile_effect(item, model, diy_code=diy_code, profile=profile)

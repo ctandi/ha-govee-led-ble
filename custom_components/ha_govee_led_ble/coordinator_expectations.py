@@ -2,11 +2,12 @@
 
 from typing import Any
 
-from .const import MUSIC_MODE_SLUGS, ModelProfile, get_profile
+from .const import MUSIC_MODE_SLUGS, ModelProfile, get_profile, music_mode_slug
 from .coordinator_status import ParsedMode
 from .generated_protocol_adapter import (
     parse_command,
     parse_h6125_brightness_write,
+    parse_h6125_music_write,
     parse_video_command,
     video_parameters_from_detail,
 )
@@ -30,6 +31,22 @@ def expectations_from_packet(
     profile = profile or get_profile(model)
     if model == "H6125" and (brightness := parse_h6125_brightness_write(packet)) is not None:
         return {"brightness_pct": int(brightness.value)}
+    if model == "H6125" and (music := parse_h6125_music_write(packet)) is not None:
+        settings = music.settings
+        manual_colour = bool(getattr(settings, "manual_colour", 0))
+        rgb = getattr(settings, "rgb", None)
+        music_mode = music_mode_slug(model, int(music.mode))
+        music_expectations: dict[str, Any] = {
+            "color_mode": (ParsedMode.MUSIC, None),
+            "music_mode": music_mode,
+            "music_sensitivity": int(music.sensitivity),
+            "music_color": (
+                (int(rgb.red), int(rgb.green), int(rgb.blue)) if manual_colour and rgb is not None else None
+            ),
+        }
+        if music_mode == "rhythm":
+            music_expectations["music_calm"] = bool(settings.style)
+        return music_expectations
     video = parse_video_command(packet, model, profile=profile)
     if video is not None:
         detail = video.detail

@@ -37,10 +37,10 @@ from .const import (
     EFFECT_FAMILY_MUSIC,
     EFFECT_FAMILY_SCENES,
     EFFECT_FAMILY_VIDEO,
-    MUSIC_MODE_SLUGS,
     ModelProfile,
     ReadDomain,
     effect_category_for_content_kind,
+    music_mode_code,
     supported_effect_categories,
 )
 from .control_arbiter import ControlIntent, async_control_intent
@@ -78,7 +78,7 @@ from .effect_storage import (
 )
 from .entity import GoveeBLEEntity
 from .generated_protocol_adapter import build_brightness, build_power, require_profile_packet
-from .light_commands import build_color_rgb, build_color_temp, kelvin_to_rgb
+from .light_commands import build_color_rgb, build_color_temp, kelvin_to_rgb, normalise_kelvin
 from .light_services import (
     _GoveeLightServicesMixin,
 )
@@ -425,12 +425,13 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
 
     @property
     def extra_restore_state_data(self) -> ExtraStoredData | None:
-        if self.color_mode is ColorMode.COLOR_TEMP and self.coordinator.color_temp_kelvin is not None:
+        color_mode = self.color_mode
+        if color_mode is ColorMode.COLOR_TEMP and self.coordinator.color_temp_kelvin is not None:
             return _StaticColorRestoreData(
                 ColorMode.COLOR_TEMP,
                 color_temp_kelvin=self.coordinator.color_temp_kelvin,
             )
-        if self.color_mode is ColorMode.RGB:
+        if color_mode is ColorMode.RGB:
             return _StaticColorRestoreData(ColorMode.RGB, rgb_color=self.coordinator.rgb_color)
         return None
 
@@ -833,7 +834,7 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
                 if video_guards is not None:
                     video_guards.append(lambda: validate_compiled_geometry(compiled, coordinator.profile))
                 return partial(async_apply_compiled_profile, coordinator, compiled)
-            variant = music_variant(coordinator.profile, MUSIC_MODE_SLUGS[selected.value])
+            variant = music_variant(coordinator.profile, music_mode_code(coordinator.model, selected.value))
             prepare_music_request(
                 coordinator.model,
                 selected.value,
@@ -1161,9 +1162,10 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
                     "colour temperature",
                     supported=self.coordinator.profile.supports_color_temperature,
                 )
-                kelvin = max(
-                    self.coordinator.profile.min_color_temp_kelvin,
-                    min(self.coordinator.profile.max_color_temp_kelvin, kwargs[ATTR_COLOR_TEMP_KELVIN]),
+                kelvin = normalise_kelvin(
+                    kwargs[ATTR_COLOR_TEMP_KELVIN],
+                    self.coordinator.model,
+                    profile=self.coordinator.profile,
                 )
                 packet = build_color_temp(kelvin, self.coordinator.model, profile=self.coordinator.profile)
                 with self._rollback():

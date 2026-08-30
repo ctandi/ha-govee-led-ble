@@ -541,6 +541,7 @@ def test_deployment_round_trip_preserves_prior_state_and_verification_confidence
         ({"music_separation_point": -1}, "prior separation point must be from 0 to 255"),
         ({"music_separation_gradient": 1}, "prior separation gradient must be a boolean"),
         ({"music_fountain_direction": "sideways"}, "prior fountain direction is invalid"),
+        ({"segment_colors": ((1, 2, 3),)}, "must be stored together"),
         ({"white_balance_red": 256}, "prior white-balance red must be from 0 to 255"),
         ({"blank_screen": 1}, "prior blank-screen state must be a boolean or null"),
     ],

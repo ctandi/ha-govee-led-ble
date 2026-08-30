@@ -81,6 +81,30 @@ class ObservationConfidence(StrEnum):
     UNKNOWN = "unknown"
 
 
+def _optional_segment_colors(
+    raw: Mapping[str, Any],
+    key: str,
+) -> tuple[tuple[int, int, int], ...] | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list | tuple):
+        raise EffectStorageError(f"{key} must be a sequence of RGB colours")
+    return tuple(_required_rgb({key: colour}, key) for colour in value)
+
+
+def _optional_segment_brightness(
+    raw: Mapping[str, Any],
+    key: str,
+) -> tuple[int, ...] | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list | tuple):
+        raise EffectStorageError(f"{key} must be a sequence of brightness values")
+    return cast(tuple[int, ...], tuple(value))
+
+
 @dataclass(frozen=True, slots=True)
 class PriorControlState:
     mode: str
@@ -238,6 +262,19 @@ class PriorControlState:
             or not 1000 <= self.color_temp_kelvin <= 10000
         ):
             raise EffectStorageError("prior colour temperature must be from 1000 to 10000")
+        if (self.segment_colors is None) != (self.segment_brightness is None):
+            raise EffectStorageError("prior segment colours and brightness must be stored together")
+        if self.segment_colors is not None:
+            assert self.segment_brightness is not None
+            if not self.segment_colors or len(self.segment_colors) != len(self.segment_brightness):
+                raise EffectStorageError("prior segment colours and brightness must have the same non-zero length")
+            for colour in self.segment_colors:
+                _validate_rgb(colour, "prior segment colour")
+            if any(
+                not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 100
+                for value in self.segment_brightness
+            ):
+                raise EffectStorageError("prior segment brightness must be from 0 to 100")
         for value, name in (
             (self.music_model, "prior music model"),
             (self.effect, "prior effect"),
