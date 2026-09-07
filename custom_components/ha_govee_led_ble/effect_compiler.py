@@ -801,7 +801,9 @@ def compile_application(
     if isinstance(item.content, VideoProfile):
         return compile_video_profile(item, model, profile=profile)
     if isinstance(item.content, PaintedEffect | SingleEffect | MultiEffect):
-        diy_code = resolve_diy_code(item, diy_code, model=model)
+        resolved = resolve_diy_code(item, diy_code, model=model)
+        if get_profile(model).effect_grammar == "H6099" or model == "H6125":
+            diy_code = resolved
         if diy_code is None:
             raise ValueError("custom-effect application requires a DIY code")
     return compile_effect(item, model, diy_code=diy_code, profile=profile)

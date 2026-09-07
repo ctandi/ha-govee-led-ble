@@ -276,4 +276,4 @@ def test_committed_snapshot_scope(
 
 
 def test_default_refresh_scope_includes_each_committed_product_catalogue():
-    assert DEFAULT_SKUS == ("H6076", "H6125", "H617A", "H617E", "H6199")
+    assert DEFAULT_SKUS == ("H6076", "H6099", "H6102", "H6125", "H617A", "H617E", "H6199")

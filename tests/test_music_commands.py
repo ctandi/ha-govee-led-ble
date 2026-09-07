@@ -129,7 +129,7 @@ def test_h6125_expanded_music_bodies_use_captured_defaults(mode: int, body: str)
     assert _assemble(frames) == expected + bytes(len(frames) * 17 - len(expected))
 
 
-@pytest.mark.parametrize("mode,parameters", [("rhythm", {}), ("separation", {"point": 4, "gradient": False})])
+@pytest.mark.parametrize("mode,parameters", [("rhythm", {}), ("separation", {"point": 4})])
 def test_music_profile_preparation_scopes_state_to_packets(mode, parameters):
     writes = prepare_music_profile_writes("H617A", mode, 50, None, False, parameters)
     assert isinstance(writes, tuple)

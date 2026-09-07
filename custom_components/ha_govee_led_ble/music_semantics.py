@@ -593,14 +593,13 @@ def capture_music_parameters(
     source: object,
     profile: ModelProfile,
     mode: str,
-    model: str,
 ) -> dict[str, int | bool | str]:
     """New snapshots always carry a mapping; only legacy persisted snapshots omit it."""
-    from .const import music_mode_code
+    from .const import MUSIC_MODE_SLUGS
 
     if mode not in profile.music_modes:
         return {}
+    mode_code = dict(profile.music_mode_codes).get(mode, MUSIC_MODE_SLUGS[mode])
     return {
-        spec.profile_key: getattr(source, spec.key, spec.default)
-        for spec in music_params_for_mode(music_mode_code(model, mode), profile)
+        spec.profile_key: getattr(source, spec.key, spec.default) for spec in music_params_for_mode(mode_code, profile)
     }

@@ -64,9 +64,9 @@ from .generated_protocol_adapter import (
     build_colour_mode_query,
     build_firmware_query,
     build_h6099_diy_activation,
+    build_h6125_brightness_value,
     build_h6199_control,
     build_h6199_control_query,
-    build_h6125_brightness_value,
     build_hardware_query,
     build_physical_ic_count_query,
     build_power,
@@ -147,7 +147,6 @@ _CORE_STATE_FIELDS = (
     "diy_code",
 )
 _COLOR_MODE_FIELDS = (
-    "color_temp_kelvin",
     "video_full_screen",
     "video_parameters",
     "video_saturation",
@@ -418,7 +417,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             diy_code=self.diy_code,
             music_mode=self.music_mode,
             music_model=self.model,
-            music_parameters=capture_music_parameters(self, self.profile, self.music_mode, self.model),
+            music_parameters=capture_music_parameters(self, self.profile, self.music_mode),
             music_palette=self.music_palette,
             music_body=self.music_body,
             video_mode=self.video_mode,
@@ -511,7 +510,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                 music_parameters = (
                     dict(state.music_parameters)
                     if state.music_parameters is not None
-                    else capture_music_parameters(state, self.profile, state.music_mode, self.model) or {}
+                    else capture_music_parameters(state, self.profile, state.music_mode) or {}
                 )
                 music_writes = prepare_music_profile_writes(
                     self.model,
@@ -852,12 +851,16 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             ):
                 colour_groups.setdefault(rgb, []).append(index)
                 brightness_groups.setdefault(brightness, []).append(index)
-            kelvin_restore = (
-                state.color_temp_kelvin is not None
-                and self.profile.static_readback_kelvin
+            kelvin_restore = state.color_temp_kelvin is not None and self.profile.static_readback_kelvin
+            if (
+                kelvin_restore
+                and state.color_temp_kelvin is not None
                 and state.segment_colors
-                == (kelvin_to_rgb(state.color_temp_kelvin, self.model),) * self.profile.segment_count
-            )
+                != (kelvin_to_rgb(state.color_temp_kelvin, self.model),) * self.profile.segment_count
+            ):
+                if self.model != "H6125":
+                    return False
+                kelvin_restore = False
             packets = (
                 [build_color_temp(state.color_temp_kelvin, self.model, profile=self.profile)]
                 if kelvin_restore and state.color_temp_kelvin is not None
@@ -1453,7 +1456,11 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                     self.color_temp_kelvin = None
                     self.color_temp_kelvin_source = "initial"
                 observed.append("rgb_color")
-        elif self.color_mode is ParsedMode.COLOUR and self.color_temp_kelvin is not None:
+        elif (
+            self.color_mode is ParsedMode.COLOUR
+            and self.color_temp_kelvin is not None
+            and self.color_temp_kelvin_source != "observed"
+        ):
             if self._accept_expected("color_temp_kelvin", None):
                 self.color_temp_kelvin = None
                 self.color_temp_kelvin_source = "initial"
@@ -1606,14 +1613,6 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             ):
                 self.color_temp_kelvin = None
                 self.color_temp_kelvin_source = "initial"
-                observed.append("color_temp_kelvin")
-            if (
-                self.model == "H6125"
-                and parsed.mode is ParsedMode.COLOUR
-                and parsed.color_temp_kelvin is None
-                and self._accept_expected("color_temp_kelvin", None)
-            ):
-                self.color_temp_kelvin = None
                 observed.append("color_temp_kelvin")
             for attr in _COLOR_MODE_FIELDS:
                 if attr == "music_color" and not parsed.music_color_present:
@@ -2790,7 +2789,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                         ok = await self._send_state_queries(
                             query_power=query_power,
                             query_brightness=query_brightness,
-                            query_color_mode=query_color or probe_color,
+                            query_color_mode=query_color,
                             **query_options,
                         )
                 if not ok:
@@ -3305,6 +3304,9 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
         attempted = False
         async with async_control_intent(self, ControlIntent.USER):
             segment_revision = self._field_revisions.get("segment_colors", 0)
+            static_revisions = {
+                field: self._field_revisions.get(field, 0) for field in ("rgb_color", "color_temp_kelvin")
+            }
             try:
                 for packet in packets:
 
@@ -3332,6 +3334,10 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                             except Exception:
                                 _LOGGER.debug("Partial segment paint reconciliation failed", exc_info=True)
                         raise
+                if all(self._field_revisions.get(field, 0) == revision for field, revision in static_revisions.items()):
+                    self.color_temp_kelvin = None
+                    self.color_temp_kelvin_source = "initial"
+                    self._enter_static_mode()
                 if (
                     not await self.async_refresh_segments()
                     or any(self.segment_colors[index] != rgb for index, rgb in expected_colors.items())

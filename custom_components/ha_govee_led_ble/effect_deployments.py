@@ -190,18 +190,6 @@ class PriorControlState:
                 validate_music_body(self.music_body, self.music_mode, profile=MODEL_PROFILES[self.music_model])
             except ValueError as error:
                 raise EffectStorageError("invalid prior music body") from error
-        if self.segment_colors is not None or self.segment_brightness is not None:
-            if (
-                not isinstance(self.segment_colors, tuple)
-                or not isinstance(self.segment_brightness, tuple)
-                or not 1 <= len(self.segment_colors) <= 16
-                or len(self.segment_colors) != len(self.segment_brightness)
-            ):
-                raise EffectStorageError("prior segment layout must contain matching 1 to 16 element tuples")
-            for rgb in self.segment_colors:
-                _validate_rgb(rgb, "prior segment colour")
-            if any(type(value) is not int or not 0 <= value <= 100 for value in self.segment_brightness):
-                raise EffectStorageError("prior segment brightness must be from 0 to 100")
         if self.music_palette is not None:
             if not isinstance(self.music_palette, tuple) or not 1 <= len(self.music_palette) <= 8:
                 raise EffectStorageError("prior music palette must contain 1 to 8 colours")

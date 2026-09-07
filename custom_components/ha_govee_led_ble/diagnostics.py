@@ -83,8 +83,6 @@ async def async_get_config_entry_diagnostics(
         "light_count_observation": _light_count_observation(packet_log, coordinator.model),
         "min_color_temp_kelvin": coordinator.profile.min_color_temp_kelvin,
         "max_color_temp_kelvin": coordinator.profile.max_color_temp_kelvin,
-        "minimum_firmware": coordinator.profile.minimum_firmware,
-        "minimum_hardware": coordinator.profile.minimum_hardware,
         "connected": bool(client and client.is_connected),
         "encryption": encryption.diagnostics() if (encryption := getattr(coordinator, "_encryption", None)) else None,
         "advertised_encryption": getattr(coordinator, "_advertised_encryption", False),

@@ -1047,7 +1047,6 @@ class EffectDeploymentEngine:
                 coordinator,
                 coordinator.profile,
                 getattr(coordinator, "music_mode", "off"),
-                coordinator.model,
             ),
             video_mode=getattr(coordinator, "video_mode", "off"),
             video_parameters=getattr(coordinator, "video_parameters", None),

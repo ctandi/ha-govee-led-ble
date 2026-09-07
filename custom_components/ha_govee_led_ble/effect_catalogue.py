@@ -8,7 +8,6 @@ from typing import Final
 
 from .const import (
     MODEL_PROFILES,
-    MUSIC_MODE_SLUGS,
     ModelProfile,
     get_profile,
     music_mode_code,
