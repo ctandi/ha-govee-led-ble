@@ -7,7 +7,10 @@ from functools import partial
 from typing import Any, cast
 from uuid import UUID
 
-import voluptuous as vol
+try:
+    import probatio as vol
+except ImportError:
+    import voluptuous as vol
 from bleak.exc import BleakError
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api.connection import ActiveConnection

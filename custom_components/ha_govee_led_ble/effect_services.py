@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-import voluptuous as vol
+try:
+    import probatio as vol
+except ImportError:
+    import voluptuous as vol
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.helpers import config_validation as cv

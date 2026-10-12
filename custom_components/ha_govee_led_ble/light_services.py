@@ -4,7 +4,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
-import voluptuous as vol
+try:
+    import probatio as vol
+except ImportError:
+    import voluptuous as vol
 from homeassistant.components.light import ColorMode  # type: ignore[attr-defined]
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, SupportsResponse

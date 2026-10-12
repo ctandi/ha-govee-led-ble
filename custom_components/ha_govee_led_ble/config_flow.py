@@ -6,7 +6,10 @@ import logging
 import re
 from typing import Any
 
-import voluptuous as vol
+try:
+    import probatio as vol
+except ImportError:
+    import voluptuous as vol
 from bleak import BleakError  # type: ignore[attr-defined]
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothServiceInfo

@@ -9,8 +9,6 @@ from functools import cache
 from typing import Literal
 from uuid import UUID
 
-from homeassistant.components.light import EFFECT_OFF
-
 from .const import (
     EFFECT_CATEGORIES,
     EFFECT_CATEGORY_ADVANCED,
@@ -28,6 +26,7 @@ from .effect_compiler import CompatibilityState, compatibility
 from .effect_domain import EffectValidationError, LibraryItem, effect_content_to_dict
 from .scenes import MODEL_SCENE_LABELS, scene_aliases
 
+EFFECT_OFF = "off"
 _EFFECT_QUOTE_CHARS = "\"'“”‘’"
 
 MUSIC_EFFECTS: dict[str, str] = {f"Music: {slug.replace('_', ' ').title()}": slug for slug in MUSIC_MODE_SLUGS}

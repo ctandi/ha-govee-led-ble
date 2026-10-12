@@ -2,7 +2,10 @@
 
 from typing import Any
 
-import voluptuous as vol
+try:
+    import probatio as vol
+except ImportError:
+    import voluptuous as vol
 
 from .const import DOMAIN
 from .effect_limits import (
