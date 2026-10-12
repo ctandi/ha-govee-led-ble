@@ -9,7 +9,7 @@ from typing import Any
 try:
     import probatio as vol
 except ImportError:
-    import voluptuous as vol
+    import voluptuous as vol  # type: ignore[no-redef]
 from bleak import BleakError  # type: ignore[attr-defined]
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothServiceInfo

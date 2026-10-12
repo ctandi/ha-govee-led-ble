@@ -5,7 +5,7 @@ from __future__ import annotations
 try:
     import probatio as vol
 except ImportError:
-    import voluptuous as vol
+    import voluptuous as vol  # type: ignore[no-redef]
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.helpers import config_validation as cv

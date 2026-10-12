@@ -10,7 +10,7 @@ from uuid import UUID
 try:
     import probatio as vol
 except ImportError:
-    import voluptuous as vol
+    import voluptuous as vol  # type: ignore[no-redef]
 from bleak.exc import BleakError
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api.connection import ActiveConnection
