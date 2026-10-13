@@ -384,6 +384,10 @@ H6102_MUSIC_VARIANTS = (
     ),
 )
 
+# H6125 pact 1 reaches the same RGBIC MusicMode.d producers as H6102 through the
+# dreamcolorlightv1 route; only the selector submode differs, and the transform owns that.
+H6125_MUSIC_VARIANTS = H6102_MUSIC_VARIANTS
+
 
 def music_variant(profile: ModelProfile, mode_code: int) -> MusicVariant | None:
     variant = next((variant for variant in profile.music_variants if variant.mode_code == mode_code), None)

@@ -147,7 +147,7 @@ def test_all_committed_type_2_scenes_decode_losslessly() -> None:
     catalogue_excess = 0
     multi_line_bodies = 0
 
-    for sku in ("H617A", "H617C", "H617F", "H6199"):
+    for sku in ("H6125", "H617A", "H617C", "H617F", "H6199"):
         entries = SCENE_ENTRIES[sku]
         for entry in entries:
             if entry.scene_type != _LAYERED_SCENE_TYPE:
@@ -184,8 +184,8 @@ def test_all_committed_type_2_scenes_decode_losslessly() -> None:
             layer_count += len(decoded.effect.layers)
             multi_line_bodies += parsed.header.linecount > 2
 
-    assert scene_counts == {"H617A": 72, "H617C": 226, "H617F": 226, "H6199": 226}
-    assert layer_count == 2207
+    assert scene_counts == {"H6125": 226, "H617A": 72, "H617C": 226, "H617F": 226, "H6199": 226}
+    assert layer_count == 2879
     assert catalogue_unknown_flags == 0
     assert catalogue_excess == 0
     assert multi_line_bodies > 0

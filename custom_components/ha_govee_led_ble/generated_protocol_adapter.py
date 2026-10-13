@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import io
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cache
 from importlib import import_module
 from types import MappingProxyType
 from typing import Any, cast
@@ -147,6 +148,14 @@ WorkshopBody = cast(
     import_module("custom_components.ha_govee_led_ble.generated_protocol.workshop_body").WorkshopBody,
 )
 MusicBody = cast(Any, import_module("custom_components.ha_govee_led_ble.generated_protocol.music_body").MusicBody)
+H6125StatusReply = cast(
+    Any,
+    import_module("custom_components.ha_govee_led_ble.generated_protocol.h6125_status_reply").H6125StatusReply,
+)
+H6125WireWrite = cast(
+    Any,
+    import_module("custom_components.ha_govee_led_ble.generated_protocol.h6125_wire_write").H6125WireWrite,
+)
 H66a0VideoCommand = cast(
     Any, import_module("custom_components.ha_govee_led_ble.generated_protocol.h66a0_video_command").H66a0VideoCommand
 )
@@ -256,6 +265,7 @@ _STATUS_ROOTS = {
     "H60A6": ("h60a6_status_reply", H60a6StatusReply),
     "H601C": ("h601c_status_reply", H601cStatusReply),
     "H6102": ("h6102_status_reply", H6102StatusReply),
+    "H6125": ("h6125_status_reply", H6125StatusReply),
     "H6099": ("h6099_status_reply", H6099StatusReply),
     "H617A": ("status_reply", StatusReply),
     "H6179": ("h6179_status_reply", H6179StatusReply),
@@ -756,10 +766,10 @@ def build_brightness_query(model: str = "H617A", *, profile: ModelProfile | None
 def build_colour_mode_query(
     model: str = "H617A", *, profile: ModelProfile | None = None, selector: int | None = None
 ) -> bytes:
-    """Select the grammar's AA05 query form, with an explicit override."""
+    """Select the profile's AA05 query form, with an explicit override."""
     profile = profile or get_profile(model)
     if selector is None:
-        selector = 1 if profile.command_grammar == "H601C" else 0
+        selector = profile.colour_mode_query_selector
     if type(selector) is not int or selector not in (0, 1):
         raise ValueError("colour-mode query selector must be 0 or 1")
     return _build_status_query("colour_mode", profile.command_grammar, colour_mode_selector=selector)
@@ -1226,19 +1236,35 @@ def build_power(on: bool, model: str = "H617A", *, profile: ModelProfile | None 
     return _serialize_xor(root)
 
 
+def encode_wire_brightness(percent: int, wire_range: tuple[int, int]) -> int:
+    """Map a 1..100 percentage onto a device register range with the app's linear rule."""
+    if not isinstance(percent, int) or isinstance(percent, bool) or not 1 <= percent <= 100:
+        raise ValueError("brightness must be an integer from 1 to 100")
+    low, high = wire_range
+    return (low * 100 + (percent - 1) * (high - low + 3)) // 100
+
+
+def decode_wire_brightness(raw: int, wire_range: tuple[int, int] | None) -> int:
+    """Invert encode_wire_brightness; a register outside the declared range is not a brightness."""
+    if wire_range is None:
+        raise ValueError("brightness register range is not declared")
+    low, high = wire_range
+    if not isinstance(raw, int) or isinstance(raw, bool) or not low <= raw <= high:
+        raise ValueError(f"brightness register must be an integer from {low} to {high}")
+    return max(1, min(100, 1 - (-((raw - low) * 100) // (high - low + 3))))
+
+
+_H6179_BRIGHTNESS_RANGE = (20, 254)
+
+
 def encode_h6179_brightness(percent: int) -> int:
     """Convert a semantic 1..100 brightness percentage to H6179 raw brightness."""
-    if not isinstance(percent, int) or isinstance(percent, bool) or not 1 <= percent <= 100:
-        raise ValueError("H6179 brightness must be an integer from 1 to 100")
-    return (2000 + (percent - 1) * 237) // 100
+    return encode_wire_brightness(percent, _H6179_BRIGHTNESS_RANGE)
 
 
 def decode_h6179_brightness(raw: int) -> int:
     """Convert a candidate H6179 raw brightness byte to a percentage."""
-    if not isinstance(raw, int) or isinstance(raw, bool) or not 20 <= raw <= 254:
-        raise ValueError("H6179 raw brightness must be an integer from 20 to 254")
-    scaled = (raw - 20) * 100
-    return max(1, min(100, 1 - (-scaled // 237)))
+    return decode_wire_brightness(raw, _H6179_BRIGHTNESS_RANGE)
 
 
 def build_brightness(percent: int, model: str = "H617A", *, profile: ModelProfile | None = None) -> bytes:
@@ -1930,6 +1956,64 @@ def build_music_mode(
     multi.sub_body = selector
     root.body = multi
     return _serialize_xor(root)
+
+
+def _h6125_wire_music(selector: Any) -> bytes:
+    root = H6125WireWrite()
+    root.header = b"\x33"
+    root.opcode = H6125WireWrite.CommandOp.mode
+    mode = _child(H6125WireWrite.ModeBody, root)
+    mode.sub = H6125WireWrite.ModeSub.music
+    wire = _child(H6125WireWrite.MusicSelector, mode)
+    name = getattr(selector.mode_id, "name", None)
+    if name not in H6125WireWrite.MusicMode.__members__:
+        raise ValueError(f"H6125 has no music selector for mode {selector.mode_id}")
+    wire.mode_id = H6125WireWrite.MusicMode[name]
+    wire.sensitivity = selector.sensitivity
+    if name in {"rhythm", "spectrum", "rolling"}:
+        colour = selector.rgb if selector.has_fixed_colour else None
+        settings = _child(H6125WireWrite.RhythmSettings if name == "rhythm" else H6125WireWrite.ColourSettings, wire)
+        if name == "rhythm":
+            settings.style = selector.style
+        settings.has_fixed_colour = int(colour is not None)
+        if colour is not None:
+            settings.rgb = _rgb(settings, colour.red, colour.green, colour.blue)
+        settings.padding = bytes(14 - (2 if name == "rhythm" else 1) - (3 if colour is not None else 0))
+    else:
+        settings = _child(H6125WireWrite.OpaqueSettings, wire)
+        settings.padding = bytes(14)
+    wire.settings = settings
+    mode.sub_body = wire
+    root.body = mode
+    return _serialize_xor(root)
+
+
+def _h6125_wire_brightness(percent: int, wire_range: tuple[int, int]) -> bytes:
+    root = H6125WireWrite()
+    root.header = b"\x33"
+    root.opcode = H6125WireWrite.CommandOp.brightness
+    body = _child(H6125WireWrite.BrightnessBody, root)
+    body.register = encode_wire_brightness(percent, wire_range)
+    body.padding = bytes(16)
+    root.body = body
+    return _serialize_xor(root)
+
+
+@cache
+def h6125_outbound_transform(wire_range: tuple[int, int]) -> Callable[[bytes], bytes]:
+    """Re-encode the two H6125 writes whose layout differs from the shared logical frames."""
+
+    def transform(packet: bytes) -> bytes:
+        parsed = parse_command_result(packet, "H617A").parsed
+        if parsed is None:
+            return packet
+        if parsed.opcode.name == "brightness":
+            return _h6125_wire_brightness(int(parsed.body.percent), wire_range)
+        if parsed.opcode.name == "multi" and parsed.body.sub.name == "music":
+            return _h6125_wire_music(parsed.body.sub_body)
+        return packet
+
+    return transform
 
 
 def music_default_palette(variant: MusicVariant | None) -> tuple[tuple[int, int, int], ...]:

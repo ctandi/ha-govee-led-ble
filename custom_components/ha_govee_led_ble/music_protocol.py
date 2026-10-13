@@ -12,9 +12,18 @@ H6179CommandWrite = cast(
     import_module("custom_components.ha_govee_led_ble.generated_protocol.h6179_command_write").H6179CommandWrite,
 )
 
+H6125StatusReply = cast(
+    Any,
+    import_module("custom_components.ha_govee_led_ble.generated_protocol.h6125_status_reply").H6125StatusReply,
+)
+
 _H617A_MODE_CODES: Final[Mapping[str, int]] = MappingProxyType(MUSIC_MODE_SLUGS)
 _H6179_MODE_CODES: Final[Mapping[str, int]] = MappingProxyType(
     {mode.name: int(mode) for mode in H6179CommandWrite.MusicEffect}
+)
+# Replies use the submode 0x11 numbering; commands keep the shared H617A logical codes.
+_H6125_STATUS_MODE_SLUGS: Final[Mapping[int, str]] = MappingProxyType(
+    {int(mode): mode.name for mode in H6125StatusReply.MusicMode}
 )
 _H6199_MODE_CODES: Final[Mapping[str, int]] = MappingProxyType(
     {
@@ -31,6 +40,7 @@ MUSIC_MODE_CODES_BY_MODEL: Final[Mapping[str, Mapping[str, int]]] = MappingProxy
         "H617E": _H617A_MODE_CODES,
         "H6099": _H617A_MODE_CODES,
         "H6102": _H617A_MODE_CODES,
+        "H6125": _H617A_MODE_CODES,
         "H6179": _H6179_MODE_CODES,
         "H6199": _H6199_MODE_CODES,
     }
@@ -48,6 +58,7 @@ _MUSIC_STYLE_CODES_BY_MODEL: Final[Mapping[str, frozenset[int]]] = MappingProxyT
         "H617E": frozenset({0x03, 0x30, 0x31}),
         "H6099": frozenset({0x03, 0x30, 0x31}),
         "H6102": frozenset({0x03, 0x30, 0x31}),
+        "H6125": frozenset({0x03, 0x30, 0x31}),
         "H6179": frozenset(),
         "H6199": frozenset({0x03}),
     }
@@ -58,6 +69,7 @@ _MUSIC_PARAMETER_WRITE_CODES_BY_MODEL: Final[Mapping[str, frozenset[int]]] = Map
         "H617E": frozenset({0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x37}),
         "H6099": frozenset({0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x37}),
         "H6102": frozenset({0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x37}),
+        "H6125": frozenset({0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x37}),
         "H6179": frozenset(),
         "H6199": frozenset(),
     }
@@ -85,6 +97,8 @@ def music_code_for(model: str, slug: str) -> int:
 
 def music_slug_for(model: str, code: int, *, direction: str = "command") -> str | None:
     """Return the model-specific slug for a raw mode code."""
+    if direction == "status" and get_profile(model).status_grammar == "H6125":
+        return _H6125_STATUS_MODE_SLUGS.get(code)
     protocol_model = _protocol_model(model, direction)
     codebook = _MUSIC_MODE_SLUGS_BY_MODEL.get(protocol_model) if protocol_model is not None else None
     return codebook.get(code) if codebook is not None else None

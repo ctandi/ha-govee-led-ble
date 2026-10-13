@@ -19,12 +19,14 @@ from custom_components.ha_govee_led_ble.const import (
     SupportQuality,
     always_include_custom_effects_from_options,
     default_effect_families,
+    device_profile,
     effect_families_from_options,
     get_profile,
     model_from_ble_name,
     prefix_effect_names_from_options,
     protocol_model,
     resolve_model,
+    supported_effect_categories,
 )
 from custom_components.ha_govee_led_ble.coordinator import GoveeBLECoordinator
 from custom_components.ha_govee_led_ble.effect_compiler import CompatibilityState, compatibility, compile_music_profile
@@ -87,6 +89,61 @@ def test_h617c_and_h617f_use_exact_scene_catalogues_with_h617a_wire_grammars(mod
 
     assert profile.scene_catalogue_sku == model
     assert profile.command_grammar == profile.status_grammar == profile.effect_grammar == "H617A"
+
+
+def test_h6125_is_an_exact_experimental_profile_on_the_shared_dreamcolor_route():
+    profile = MODEL_PROFILES["H6125"]
+
+    assert profile.support_quality is SupportQuality.EXPERIMENTAL
+    assert (profile.command_grammar, profile.status_grammar, profile.effect_grammar) == ("H617A", "H6125", "H617A")
+    assert profile.scene_catalogue_sku == "H6125" and "H6125" in BLE_DISCOVERABLE_MODELS
+    assert (profile.segment_count, profile.segment_group_size, profile.physical_ic_count) == (15, 3, 50)
+    assert profile.a1_diy_selector == 0xFE and profile.colour_mode_query_selector == 1
+    assert len(profile.music_modes) == 11 and profile.music_variants
+    assert not profile.supports_advanced_effects and not profile.supports_video_mode
+    assert profile.brightness_wire_range is None and profile.outbound_transform is None
+    assert supported_effect_categories("H6125") == ("scenes", "effects", "multi_layered", "reactive")
+
+
+@pytest.mark.parametrize(
+    ("pact", "firmware", "hardware", "wire_range"),
+    [
+        ((1, 2), "1.07.00", "1.00.03", (6, 254)),
+        ((1, 1), "1.07.01", "1.00.04", (20, 254)),
+        ((1, 2), "1.07.01", "1.00.04", (20, 254)),
+        ((1, 2), "1.08.00", "1.01.00", (20, 254)),
+        ((1, 2), "1.06.99", "1.00.04", None),
+        ((1, 2), "1.07.00", "1.00.02", None),
+        ((1, 2), "1.07.00", "2.00.04", None),
+        ((1, 2), "1.07.00", "1.04", None),
+        ((1, 2), "1.07", "1.00.04", None),
+        ((1, 2), None, "1.00.04", None),
+        ((1, 2), "1.07.00", None, None),
+        ((1, 3), "1.07.01", "1.00.04", None),
+        ((10, 2), "3.01.00", "1.00.04", None),
+        ((None, None), "1.07.00", "1.00.04", None),
+    ],
+)
+def test_h6125_pact_revision_gate_admits_one_controller_generation(pact, firmware, hardware, wire_range):
+    profile = device_profile("H6125", *pact, firmware=firmware, hardware=hardware)
+
+    if wire_range is None:
+        assert profile is const.H6125_POWER_ONLY_PROFILE
+        assert profile.command_operations == frozenset({"power"}) and profile.outbound_transform is None
+        assert profile.read_domains == {ReadDomain.POWER, ReadDomain.FIRMWARE, ReadDomain.HARDWARE}
+    else:
+        assert profile.name == MODEL_PROFILES["H6125"].name
+        assert profile.brightness_wire_range == wire_range
+        assert profile.outbound_transform is not None
+        # The cached transform keeps profile equality stable, so refreshes do not reset state.
+        assert profile == device_profile("H6125", *pact, firmware=firmware, hardware=hardware)
+
+
+def test_register_range_requires_the_transform_that_encodes_it():
+    with pytest.raises(ValueError, match="requires the outbound transform"):
+        ModelProfile("x", brightness_wire_range=(20, 254))
+    with pytest.raises(ValueError, match="register range"):
+        ModelProfile("x", brightness_wire_range=(0, 254), outbound_transform=lambda packet: packet)
 
 
 def test_h6076_profile_is_basic_and_fail_closed():

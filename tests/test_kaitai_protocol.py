@@ -54,6 +54,8 @@ H6179CommandWrite = _generated("h6179_command_write", "H6179CommandWrite")
 H6179DiyBody = _generated("h6179_diy_body", "H6179DiyBody")
 H6179StatusQuery = _generated("h6179_status_query", "H6179StatusQuery")
 H6179StatusReply = _generated("h6179_status_reply", "H6179StatusReply")
+H6125StatusReply = _generated("h6125_status_reply", "H6125StatusReply")
+H6125WireWrite = _generated("h6125_wire_write", "H6125WireWrite")
 H6179ScheduleWrite = _generated("h6179_schedule_write", "H6179ScheduleWrite") if _GENERATED_DIR else None
 DiyType03 = _generated("diy_type03", "DiyType03")
 DiyType04 = _generated("diy_type04", "DiyType04")
@@ -68,6 +70,12 @@ H6199WifiProvision = _generated("h6199_wifi_provision", "H6199WifiProvision")
 H6199WifiResult = _generated("h6199_wifi_result", "H6199WifiResult")
 
 COMMAND_STATIC = bytes.fromhex("330515010000000e10ffcb8dff7f000000000005")
+# 2020 public H6125 boot log: brightness register write 0xfe and the 0x14 register reply.
+H6125_BRIGHTNESS_WRITE = bytes.fromhex("3304fe00000000000000000000000000000000c9")
+H6125_BRIGHTNESS_REPLY = bytes.fromhex("aa041400000000000000000000000000000000ba")
+# Submode 0x11 layouts follow the app producer; no identified H6125 capture exists.
+H6125_MUSIC_WRITE = bytes.fromhex("33051111320101ff0000000000000000000000fb")
+H6125_MUSIC_STATUS = bytes.fromhex("aa051111320101ff000000000000000000000062")
 STATUS_SEGMENTS = bytes.fromhex("aaa50164ff880d64ff880d64ff880d0000000010")
 H617A_SEGMENT_QUERY = bytes.fromhex("aaa505000000000000000000000000000000000a")
 H6199_SEGMENT_QUERY = bytes.fromhex("aaa504000000000000000000000000000000000b")
@@ -784,6 +792,10 @@ REPRESENTATIVE_ROOTS = (
     pytest.param(H6179DiyBody, H6179_DIY, id="H6179 DIY"),
     pytest.param(H6179StatusQuery, H6179_MODE_QUERY, id="H6179 status query"),
     pytest.param(H6179StatusReply, H6179_STATUS, id="H6179 status"),
+    pytest.param(H6125WireWrite, H6125_BRIGHTNESS_WRITE, id="H6125 brightness register write"),
+    pytest.param(H6125StatusReply, H6125_BRIGHTNESS_REPLY, id="H6125 brightness register reply"),
+    pytest.param(H6125WireWrite, H6125_MUSIC_WRITE, id="H6125 submode 0x11 music write"),
+    pytest.param(H6125StatusReply, H6125_MUSIC_STATUS, id="H6125 submode 0x11 music status"),
     *(
         (pytest.param(H6179ScheduleWrite, H6179_SCHEDULE, id="H6179 schedule evidence"),)
         if H6179ScheduleWrite is not None
@@ -927,6 +939,23 @@ def test_missing_or_unknown_grammar_fails_closed_only_in_its_direction(monkeypat
     else:
         assert generated_protocol_adapter.build_power(True) == bytes.fromhex("3301010000000000000000000000000000000033")
         assert generated_protocol_adapter.build_segment_query(5) == H617A_SEGMENT_QUERY
+
+
+def test_h6125_wire_and_status_fields_are_meaningful() -> None:
+    brightness = _parse(H6125WireWrite, H6125_BRIGHTNESS_WRITE)
+    assert (brightness.opcode.name, brightness.body.register) == ("brightness", 0xFE)
+    assert _parse(H6125StatusReply, H6125_BRIGHTNESS_REPLY).body.register == 0x14
+
+    write = _parse(H6125WireWrite, H6125_MUSIC_WRITE)
+    selector = write.body.sub_body
+    assert (write.body.sub.name, selector.mode_id.name, selector.sensitivity) == ("music", "rhythm", 50)
+    assert (selector.settings.style, selector.settings.has_fixed_colour) == (1, 1)
+    assert (selector.settings.rgb.red, selector.settings.rgb.green, selector.settings.rgb.blue) == (255, 0, 0)
+
+    status = _parse(H6125StatusReply, H6125_MUSIC_STATUS).body
+    assert status.mode.name == "music" and status.mode_body.mode_id.name == "rhythm"
+    assert (status.mode_body.is_legacy, status.mode_body.style, status.mode_body.has_fixed_colour) == (True, 1, 1)
+    assert status.mode_body.rgb.red == 255
 
 
 def test_command_and_status_fields_are_meaningful() -> None:

@@ -74,6 +74,7 @@ from .generated_protocol_adapter import (
     build_segment_query,
     build_subordinate_query,
     build_white_balance_query,
+    decode_wire_brightness,
     parse_command_ack_result,
     parse_command_result,
     parse_h6199_control,
@@ -143,6 +144,8 @@ PACKET_LOG_LIMIT = 50
 PACKET_LOG_RAW_BYTES_LIMIT = 512
 EXPECTED_STATE_TTL = 2.0
 AVAILABILITY_UNAVAILABLE_DATA_KEY = "availability_unavailable"
+# Models whose effective profile is qualified by fresh firmware and hardware identity.
+_IDENTITY_QUALIFIED_MODELS = frozenset({"H60A1", "H60A6", "H6102", "H6125"})
 
 _CORE_STATE_FIELDS = (
     "is_on",
@@ -341,6 +344,8 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
         if model == "H6102":
             if h6102_pact is not None:
                 self.pact_type, self.pact_code = H6102_PACTS[h6102_pact]
+            self._resolve_device_profile()
+        elif model == "H6125":
             self._resolve_device_profile()
 
     @property
@@ -888,7 +893,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             self.hw_version, changed = hw_version, True
         if not changed:
             return
-        if self.model in {"H60A1", "H60A6", "H6102"}:
+        if self.model in _IDENTITY_QUALIFIED_MODELS:
             self._resolve_device_profile()
         assert self.config_entry is not None
         registry = dr.async_get(self.hass)
@@ -968,7 +973,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                     self._advertised_plaintext = True
 
     def _resolve_device_profile(self) -> None:
-        if self.model not in {"H60A1", "H60A6", "H6102", "H6199"}:
+        if self.model not in {"H60A1", "H60A6", "H6102", "H6125", "H6199"}:
             return
         if self.model == "H6102":
             context = (self.pact_type, self.pact_code, self.fw_version, self.hw_version, self.profile.physical_ic_count)
@@ -1121,7 +1126,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
             setattr(self, field, None)
         if self.model == "H6102":
             self.profile = replace(self.profile, physical_ic_count=None)
-        if self.model in {"H60A1", "H60A6", "H6102"}:
+        if self.model in _IDENTITY_QUALIFIED_MODELS:
             self._resolve_device_profile()
         self.boolean_control_state.clear()
         self.installation_direction, self.camera_health = None, "unknown"
@@ -1730,6 +1735,8 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
                     if isinstance(generated, ParsedH6179Status)
                     else int(generated.body.percent)
                     if self.profile.status_grammar in {"H6099", "H6199"}
+                    else decode_wire_brightness(int(generated.body.register), self.profile.brightness_wire_range)
+                    if self.profile.status_grammar == "H6125"
                     else int(generated.body.brightness_pct)
                 )
                 if not 0 <= brightness_value <= 100:
@@ -2261,7 +2268,7 @@ class GoveeBLECoordinator(_DreamviewMixin, _ActiveModeMixin):
     def _authorization_identity_fields(self) -> frozenset[str]:
         return (
             frozenset({"fw_version", "hw_version"})
-            if self.model in {"H60A1", "H60A6", "H6102"}
+            if self.model in _IDENTITY_QUALIFIED_MODELS
             else frozenset(video_identity_fields(self.profile))
         )
 

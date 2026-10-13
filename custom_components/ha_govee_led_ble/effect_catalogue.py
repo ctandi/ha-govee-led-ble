@@ -946,6 +946,8 @@ WORKSHOP_PROTOCOL_FIXTURES: Final = (
     ),
 )
 
+H6125_NATIVE_MUSIC_MODES: Final = _native_music_modes("H6125")
+
 MODEL_EFFECT_CATALOGUES: Final = {
     "H6102": ModelEffectCatalogue(
         sku="H6102",
@@ -1027,6 +1029,30 @@ MODEL_EFFECT_CATALOGUES: Final = {
             multi=studio_apply_capability_state("H6099", CapabilityWorkflow.MULTI),
             palette_diy=studio_apply_capability_state("H6099", CapabilityWorkflow.PALETTE_DIY),
             workshop=studio_apply_capability_state("H6099", CapabilityWorkflow.WORKSHOP),
+        ),
+    ),
+    "H6125": ModelEffectCatalogue(
+        sku="H6125",
+        painted_effects=(),
+        effects=H6102_DIY_FAMILIES,
+        music_modes=H6125_NATIVE_MUSIC_MODES,
+        video_modes=(),
+        templates=(
+            *(_single_template("H6125", family) for family in H6102_DIY_FAMILIES),
+            *(_music_template("H6125", mode) for mode in H6125_NATIVE_MUSIC_MODES),
+        ),
+        workshop_templates=(),
+        supports=CatalogueSupport(
+            multi=workflow_capability_state("H6125", CapabilityWorkflow.MULTI),
+            advanced=workflow_capability_state("H6125", CapabilityWorkflow.ADVANCED),
+            workshop=workflow_capability_state("H6125", CapabilityWorkflow.WORKSHOP),
+        ),
+        apply=ApplySupport(
+            painted=studio_apply_capability_state("H6125", CapabilityWorkflow.PAINTED),
+            single=studio_apply_capability_state("H6125", CapabilityWorkflow.SINGLE),
+            multi=studio_apply_capability_state("H6125", CapabilityWorkflow.MULTI),
+            palette_diy=studio_apply_capability_state("H6125", CapabilityWorkflow.PALETTE_DIY),
+            workshop=studio_apply_capability_state("H6125", CapabilityWorkflow.WORKSHOP),
         ),
     ),
     "H617A": ModelEffectCatalogue(

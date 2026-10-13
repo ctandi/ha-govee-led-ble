@@ -29,7 +29,7 @@ from custom_components.ha_govee_led_ble.coordinator import (
 from custom_components.ha_govee_led_ble.coordinator_expectations import expectations_from_packet
 from custom_components.ha_govee_led_ble.coordinator_status import ParsedMode
 from custom_components.ha_govee_led_ble.effect_commands import build_h617a_diy_activation
-from custom_components.ha_govee_led_ble.effect_compiler import compile_effect
+from custom_components.ha_govee_led_ble.effect_compiler import compile_application, compile_effect
 from custom_components.ha_govee_led_ble.effect_deployments import (
     DeploymentPhase,
     EffectDeploymentRepository,
@@ -216,6 +216,106 @@ def test_h6199_retains_default_idle_release_and_polling(h6199):
     with patch(f"{M}.async_call_later") as call_later:
         h6199._reset_disconnect_timer()
     assert call_later.call_args.args[1] == 15
+
+
+@pytest.fixture
+def h6125(hass):
+    return GoveeBLECoordinator(
+        hass,
+        "66:77:88:99:AA:BB",
+        "H6125",
+        configuration_url=_CONFIGURATION_URL,
+    )
+
+
+def _qualify_h6125(coordinator, *, hardware="1.00.04"):
+    coordinator.pact_type, coordinator.pact_code = 1, 2
+    coordinator.fw_version, coordinator.hw_version = "1.07.00", hardware
+    coordinator._resolve_device_profile()
+
+
+def test_h6125_notifications_decode_register_brightness_and_submode_0x11_music(h6125):
+    _qualify_h6125(h6125)
+    h6125._notify_callback(None, bytearray(_packet(0xAA, 0x04, [0xFE])))
+    assert h6125.brightness_pct == 100
+    h6125._notify_callback(None, bytearray(_packet(0xAA, 0x04, [0x14])))
+    assert h6125.brightness_pct == 1
+    h6125._notify_callback(None, bytearray(_packet(0xAA, 0x05, [0x11, 0x11, 0x32, 1, 1, 255, 0, 0])))
+    assert h6125.color_mode is ParsedMode.MUSIC
+    assert (h6125.music_mode, h6125.music_sensitivity, h6125.music_calm, h6125.music_color) == (
+        "rhythm",
+        50,
+        True,
+        (255, 0, 0),
+    )
+    h6125._notify_callback(None, bytearray(_packet(0xAA, 0x04, [0x05])))
+    assert h6125.brightness_pct == 1
+
+
+async def test_h6125_writes_the_register_while_expectations_stay_in_percent(h6125):
+    _qualify_h6125(h6125, hardware="1.00.03")
+    client = MagicMock(is_connected=True, write_gatt_char=AsyncMock())
+    await h6125._async_write_packet(client, build_brightness(50, "H6125"), arm_expected=True)
+    assert [call.args[1] for call in client.write_gatt_char.await_args_list] == [
+        bytes.fromhex("33048000000000000000000000000000000000b7")
+    ]
+    assert h6125.brightness_pct == 50
+    assert h6125.packet_log[-1]["outcome"] == "sent"
+    music = build_music_mode(0x03, 40, (1, 2, 3), True, "H6125")
+    await h6125._async_write_packet(client, music, arm_expected=True)
+    assert client.write_gatt_char.await_args.args[1] == bytes.fromhex("330511112801010102030000000000000000001e")
+    expected = expectations_from_packet(music, "H6125", profile=h6125.profile)
+    assert (expected["music_mode"], expected["music_calm"], expected["music_color"]) == ("rhythm", True, (1, 2, 3))
+    assert {"music_mode", "music_sensitivity"} <= h6125._expected_state.keys()
+
+
+def test_h6125_advertised_pact_and_notified_identity_qualify_the_profile(h6125):
+    h6125.config_entry = MagicMock(entry_id="test-entry")
+    h6125._note_advertisement(SimpleNamespace(manufacturer_data={34818: bytes((0xEC, 0, 1, 2, 0))}))
+    assert (h6125.pact_type, h6125.pact_code) == (1, 2)
+    assert h6125.profile.command_operations == frozenset({"power"})
+    h6125._notify_callback(None, bytearray(_packet(0xAA, 0x06, list(b"1.07.01\0"))))
+    assert h6125.profile.command_operations == frozenset({"power"})
+    h6125._notify_callback(None, bytearray(_packet(0xAA, 0x07, [3, *b"1.00.03\0"])))
+    assert h6125.profile.brightness_wire_range == (6, 254) and h6125.profile.supports_segments
+    h6125._notify_callback(None, bytearray(_packet(0xAA, 0x04, [128])))
+    assert h6125.brightness_pct == 50
+    generation = h6125._profile_generation
+    h6125._notify_callback(None, bytearray(_packet(0xAA, 0x06, list(b"1.06.99\0"))))
+    assert h6125.profile.command_operations == frozenset({"power"}) and h6125._profile_generation == generation + 1
+
+
+async def test_h6125_type04_sequence_reaches_the_device_as_a1_frames_then_the_selector(h6125, monkeypatch):
+    _qualify_h6125(h6125)
+    compiled = compile_application(
+        LibraryItem.new("Fade", SingleEffect(family=0, variant=0, speed=40, palette=((255, 0, 0),))),
+        "H6125",
+        profile=h6125.profile,
+    )
+    client = MagicMock(is_connected=True, write_gatt_char=AsyncMock())
+    h6125._client = client
+    monkeypatch.setattr(h6125, "_ensure_connected", AsyncMock(return_value=client))
+    await h6125.async_write_effect_sequence(
+        list(compiled.upload_packets), intent=ControlIntent.APPLY, final_packet=compiled.activation_packet
+    )
+    assert [call.args[1] for call in client.write_gatt_char.await_args_list] == [
+        *compiled.upload_packets,
+        compiled.activation_packet,
+    ]
+
+
+async def test_h6125_reconnect_revokes_the_qualified_profile_until_identity_returns(h6125, monkeypatch):
+    _qualify_h6125(h6125)
+    assert h6125.profile.outbound_transform is not None
+
+    async def establish(*args, **kwargs):
+        assert h6125.fw_version is None and h6125.hw_version is None
+        assert h6125.profile.command_operations == frozenset({"power"})
+        raise RuntimeError("stop before connecting")
+
+    monkeypatch.setattr("custom_components.ha_govee_led_ble.coordinator.async_establish_ble_connection", establish)
+    with pytest.raises(RuntimeError, match="stop before connecting"):
+        await h6125._ensure_connected()
 
 
 def test_h6179_notifications_update_power_brightness_and_diy_mode(h6179):

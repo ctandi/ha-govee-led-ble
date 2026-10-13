@@ -24,7 +24,7 @@ from .generated_protocol_adapter import (
 )
 from .h6179_effect_codec import decode_h6179_effect
 from .layered_scene_decoder import decode_workshop_effect
-from .transport import reassemble_a3, reassemble_h6179_a1_02
+from .transport import reassemble_a1_02, reassemble_a3
 
 __all__ = [
     "UnsupportedA3EffectError",
@@ -55,10 +55,10 @@ def decode_effect_frames(
     """Decode locally generated upload frames using their explicit transport."""
     if transport == "a3":
         return decode_a3_effect_frames(frames, model)
-    if transport == "h6179_a1_02":
+    if transport == "a1_02":
         if get_profile(model).effect_grammar != "H6179":
-            raise ValueError(f"{model} cannot decode H6179 A1 02 effect frames")
-        return decode_h6179_effect(reassemble_h6179_a1_02(frames))
+            raise ValueError(f"{model} cannot decode A1 02 effect frames")
+        return decode_h6179_effect(reassemble_a1_02(frames))
     raise ValueError(f"unsupported effect upload transport {transport!r}")
 
 

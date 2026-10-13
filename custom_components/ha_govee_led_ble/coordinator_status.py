@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, cast
 
-from .const import MUSIC_MODE_SLUGS, ModelProfile, ReadDomain, get_profile
+from .const import ModelProfile, ReadDomain, get_profile
 from .generated_protocol_adapter import (
     ParsedH6179Status,
     ProtocolParseResult,
@@ -20,7 +20,6 @@ from .scenes import MODEL_SCENES, scene_key_for_code
 _SCENE_EFFECT_BY_MODEL_ID = {
     model: {scene.code: name for name, scene in scenes.items()} for model, scenes in MODEL_SCENES.items()
 }
-_RHYTHM_MODE_ID = MUSIC_MODE_SLUGS["rhythm"]
 
 
 StatusDomain = ReadDomain
@@ -305,7 +304,7 @@ def parse_color_mode(generated: Any, model: str, *, profile: ModelProfile | None
             mode=ParsedMode.MUSIC,
             music_mode=music_mode,
             music_sensitivity=int(detail.sensitivity),
-            music_calm=bool(detail.style) if int(detail.mode_id) == _RHYTHM_MODE_ID else None,
+            music_calm=bool(detail.style) if music_mode == "rhythm" else None,
             music_color=music_color,
         )
     return ParsedColorModeResponse()

@@ -20,7 +20,7 @@ from .generated_protocol_adapter import (
 )
 from .h6179_effect_codec import encode_h6179_effect
 from .light_commands import SEGMENT_COUNT
-from .transport import fragment_a3, fragment_a3_envelope, fragment_h6179_a1_02
+from .transport import fragment_a1_02, fragment_a3, fragment_a3_envelope
 
 type RGB = tuple[int, int, int]
 
@@ -100,7 +100,7 @@ def build_h617a_diy_activation(diy_code: int) -> bytes:
 def build_h6179_diy(
     content: H6179SingleDiyEffect | H6179MixedDiyEffect,
 ) -> list[bytes]:
-    return fragment_h6179_a1_02(encode_h6179_effect(content))
+    return fragment_a1_02(encode_h6179_effect(content))
 
 
 def build_h6179_diy_activation(diy_code: int) -> bytes:
@@ -129,11 +129,19 @@ def build_h6199_palette_diy_activation(scene_code: int, music_code: int) -> byte
     return build_h6199_scene(scene_code, music_code)
 
 
+def _frame_type04(body: bytes, a1_selector: int | None) -> list[bytes]:
+    if a1_selector is None:
+        return fragment_a3(0x04, body)
+    return fragment_a1_02(bytes([a1_selector]) + body)
+
+
 def build_h617a_diy_single(
     family: int,
     variant: int,
     speed: int,
     palette: Sequence[RGB],
+    *,
+    a1_selector: int | None = None,
 ) -> list[bytes]:
     _validate_byte(family, "family")
     if family == 0xFF:
@@ -141,13 +149,15 @@ def build_h617a_diy_single(
     _validate_byte(variant, "variant")
     _validate_percent(speed, "speed")
     _validate_palette(palette)
-    return fragment_a3(0x04, build_h617a_diy_single_body(family, variant, speed, list(palette)))
+    return _frame_type04(build_h617a_diy_single_body(family, variant, speed, list(palette)), a1_selector)
 
 
 def build_h617a_diy_multi(
     effects: Sequence[tuple[int, int]],
     speed: int,
     palette: Sequence[RGB],
+    *,
+    a1_selector: int | None = None,
 ) -> list[bytes]:
     if not 1 <= len(effects) <= 4:
         raise ValueError("Multi must contain 1 to 4 effects")
@@ -160,4 +170,4 @@ def build_h617a_diy_multi(
         encoded_effects.append((family, variant))
     _validate_percent(speed, "speed")
     _validate_palette(palette)
-    return fragment_a3(0x04, build_h617a_diy_multi_body(encoded_effects, speed, list(palette)))
+    return _frame_type04(build_h617a_diy_multi_body(encoded_effects, speed, list(palette)), a1_selector)

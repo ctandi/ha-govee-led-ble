@@ -54,6 +54,7 @@ test("canonical backend responses decode through the production validators", () 
   expect(devices.map((device) => device.model)).toEqual([
     "H6102",
     "H6099",
+    "H6125",
     "H617A",
     "H617E",
     "H6179",

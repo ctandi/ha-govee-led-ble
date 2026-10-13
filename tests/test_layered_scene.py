@@ -452,7 +452,7 @@ def test_all_committed_layered_scenes_round_trip_canonical_values() -> None:
     scene_counts: Counter[str] = Counter()
     record_count = 0
 
-    for sku in ("H617A", "H617C", "H617F", "H6199"):
+    for sku in ("H6125", "H617A", "H617C", "H617F", "H6199"):
         entries = SCENE_ENTRIES[sku]
         for entry in entries:
             if entry.scene_type != int(SceneBody.SceneType.scene_v2):
@@ -476,7 +476,7 @@ def test_all_committed_layered_scenes_round_trip_canonical_values() -> None:
             scene_counts[sku] += 1
             record_count += len(restored.effect.layers)
 
-    assert scene_counts == {"H617A": 72, "H617C": 226, "H617F": 226, "H6199": 226}
+    assert scene_counts == {"H6125": 226, "H617A": 72, "H617C": 226, "H617F": 226, "H6199": 226}
 
 
 @pytest.mark.parametrize(

@@ -371,7 +371,7 @@ def compile_effect(
             raise ValueError("H6179 DIY application requires an approved disposable DIY code")
         return compile_h6179(item, diy_code)
     if isinstance(item.content, PaintedEffect | SingleEffect | MultiEffect):
-        if get_profile(model).effect_grammar == "H6099":
+        if _has_fixed_diy_slot(model):
             diy_code = resolve_diy_code(item, diy_code, model=model)
         if diy_code is None:
             raise ValueError("H617A custom-effect compilation requires a DIY code")
@@ -391,6 +391,11 @@ def compile_effect(
         resolve_diy_code(item, diy_code, model=model)
         return _compile_workshop_effect(item, model)
     raise ValueError("unsupported effect content")
+
+
+def _has_fixed_diy_slot(model: str) -> bool:
+    profile = get_profile(model)
+    return profile.effect_grammar == "H6099" or profile.a1_diy_selector is not None
 
 
 def workshop_apply_code(model: str) -> int:
@@ -456,10 +461,13 @@ def resolve_diy_code(
             else CapabilityWorkflow.MULTI
         )
         grammar = require_effect_route("H617A" if model is None else model, workflow, ("H617A", "H6099"))
+        a1_selector = get_profile("H617A" if model is None else model).a1_diy_selector
         code = (
             (
                 H6099_DIY_APPLY_CODE
                 if grammar == "H6099"
+                else a1_selector
+                if a1_selector is not None
                 else 800
                 if isinstance(content, PaintedEffect)
                 else H617A_TYPE04_APPLY_CODE
@@ -469,6 +477,8 @@ def resolve_diy_code(
         )
         if not isinstance(code, int) or isinstance(code, bool) or not 0 <= code <= 0xFFFF:
             raise ValueError("DIY code must be an integer from 0 to 65535")
+        if a1_selector is not None and code != a1_selector:
+            raise ValueError(f"{model} custom effects use the A1 selector 0x{a1_selector:02x}")
         return code
     return None
 
@@ -652,6 +662,7 @@ def compile_h617a(
             content.variant,
             content.speed,
             content.palette,
+            a1_selector=profile.a1_diy_selector,
         )
     elif isinstance(content, MultiEffect):
         content_kind = "h617a_multi"
@@ -659,6 +670,7 @@ def compile_h617a(
             tuple((effect.family, effect.variant) for effect in content.effects),
             content.speed,
             content.palette,
+            a1_selector=profile.a1_diy_selector,
         )
     else:
         raise ValueError("unsupported H617A effect content")
@@ -686,6 +698,7 @@ def compile_h617a(
         physical_ic_count=profile.physical_ic_count
         if isinstance(content, PaintedEffect) and content.addressing == "physical_ic"
         else None,
+        upload_transport="a3" if profile.a1_diy_selector is None else "a1_02",
     )
 
 
@@ -710,7 +723,7 @@ def compile_h6179(item: LibraryItem, diy_code: int) -> CompiledEffect:
         activation_packet=activation,
         artifact_sha256=sha256(b"".join((*upload, activation))).hexdigest(),
         evidence_codes=("effect_content_readback_unavailable",),
-        upload_transport="h6179_a1_02",
+        upload_transport="a1_02",
     )
 
 
@@ -817,7 +830,7 @@ def compile_application(
         resolve_diy_code(item, diy_code, model=model)
     elif isinstance(item.content, PaintedEffect | SingleEffect | MultiEffect):
         resolved = resolve_diy_code(item, diy_code, model=model)
-        if get_profile(model).effect_grammar == "H6099":
+        if _has_fixed_diy_slot(model):
             diy_code = resolved
         if diy_code is None:
             raise ValueError("custom-effect application requires a DIY code")

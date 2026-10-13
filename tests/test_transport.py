@@ -3,10 +3,10 @@
 import pytest
 
 from custom_components.ha_govee_led_ble.transport import (
+    fragment_a1_02,
     fragment_a3,
-    fragment_h6179_a1_02,
+    reassemble_a1_02,
     reassemble_a3,
-    reassemble_h6179_a1_02,
     xor_checksum,
 )
 
@@ -39,26 +39,26 @@ def test_a3_fragmentation_preserves_captured_forms() -> None:
         _assert_valid(frame)
 
 
-def test_h6179_a1_fragmentation_preserves_observed_form() -> None:
+def test_a1_fragmentation_preserves_observed_form() -> None:
     body = H("fe00006403ff0000")
-    frames = fragment_h6179_a1_02(body)
+    frames = fragment_a1_02(body)
 
     assert frames == [
         H("a1020001000000000000000000000000000000a2"),
         H("a10201fe00006403ff00000000000000000000c4"),
         H("a102ff000000000000000000000000000000005c"),
     ]
-    assert reassemble_h6179_a1_02(frames) == body + bytes(8)
+    assert reassemble_a1_02(frames) == body + bytes(8)
     for frame in frames:
         _assert_valid(frame)
 
 
-def test_h6179_a1_and_a3_transports_reject_each_other() -> None:
-    a1_frames = fragment_h6179_a1_02(H("fe00006403ff0000"))
+def test_a1_and_a3_transports_reject_each_other() -> None:
+    a1_frames = fragment_a1_02(H("fe00006403ff0000"))
     a3_frames = fragment_a3(0x04, H("fe00006403ff0000"))
 
-    with pytest.raises(ValueError, match="not an H6179 A1 02 frame"):
-        reassemble_h6179_a1_02(a3_frames)
+    with pytest.raises(ValueError, match="not an A1 02 frame"):
+        reassemble_a1_02(a3_frames)
     with pytest.raises(ValueError, match="invalid prefix"):
         reassemble_a3(a1_frames)
 

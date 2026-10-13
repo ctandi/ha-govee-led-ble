@@ -250,7 +250,7 @@ def test_h6179_compiler_uses_a1_transport_and_approved_activation_code() -> None
         diy_code=0x1234,
     )
 
-    assert compiled.upload_transport == "h6179_a1_02"
+    assert compiled.upload_transport == "a1_02"
     assert compiled.activation_packet == H("33050a341200000000000000000000000000001a")
     assert (
         decode_effect_frames(

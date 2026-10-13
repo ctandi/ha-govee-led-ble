@@ -12,6 +12,7 @@ from .music_semantics import (
     H617E_MUSIC_VARIANTS,
     H6099_MUSIC_VARIANTS,
     H6102_MUSIC_VARIANTS,
+    H6125_MUSIC_VARIANTS,
     MusicVariant,
 )
 
@@ -117,6 +118,10 @@ class ModelProfile:
     command_operations: frozenset[str] | None = None
     status_grammar: str | None = None
     outbound_transform: Callable[[bytes], bytes] | None = None
+    # Device register range for the brightness byte; None means the wire carries percent.
+    brightness_wire_range: tuple[int, int] | None = None
+    # AA05 selector byte the device accepts for the active-mode query.
+    colour_mode_query_selector: int = 0
     # Effect semantics require evidence independent of basic command compatibility.
     effect_grammar: str | None = None
     video_grammar: str | None = None
@@ -181,6 +186,8 @@ class ModelProfile:
     selector_only_scene_bits: int | None = None
     advanced_scene_carrier: tuple[int, int] | None = None
     advanced_diy_selector: int | None = None
+    # When set, Type04 custom effects upload as A1 command-02 frames led by this selector and activate with it.
+    a1_diy_selector: int | None = None
     diy_requires_upload_ack: bool = False
     boolean_controls: frozenset[str] = frozenset()
     default_effect_families_override: frozenset[str] | None = None
@@ -195,6 +202,10 @@ class ModelProfile:
             type(self.advanced_diy_selector) is not int or not 0 <= self.advanced_diy_selector <= 65535
         ):
             raise ValueError("Advanced DIY selector must be an unsigned 16-bit value")
+        if self.a1_diy_selector is not None and (
+            type(self.a1_diy_selector) is not int or not 0 <= self.a1_diy_selector <= 255
+        ):
+            raise ValueError("A1 DIY selector must be an unsigned byte")
         if type(self.dreamview_max_sub_devices) is not int or not 0 <= self.dreamview_max_sub_devices <= 255:
             raise ValueError("DreamView member capacity must be from 0 to 255")
         if self.physical_ic_count is not None and (
@@ -267,6 +278,12 @@ class ModelProfile:
             raise ValueError("relative brightness requires an evidenced ordered topology")
         if self.selector_only_scene_bits is not None and not 1 <= self.selector_only_scene_bits <= 16:
             raise ValueError("selector-only scene width must be from 1 to 16 bits")
+        if self.brightness_wire_range is not None:
+            low, high = self.brightness_wire_range
+            if not 1 <= low < high <= 255:
+                raise ValueError("brightness register range must satisfy 1 <= minimum < maximum <= 255")
+            if self.outbound_transform is None:
+                raise ValueError("a brightness register range requires the outbound transform that encodes it")
 
     def can_read(self, domain: ReadDomain) -> bool:
         return domain in self.read_domains
@@ -422,6 +439,7 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "H601C Recessed Downlight",
         command_grammar="H601C",
         command_operations=frozenset({"power", "brightness", "static"}),
+        colour_mode_query_selector=1,
         supports_rgb=True,
         supports_color_temperature=True,
         min_color_temp_kelvin=2700,
@@ -650,6 +668,63 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         connection_idle_timeout=3.0,
         scene_catalogue_sku="H6102",
     ),
+    "H6125": ModelProfile(
+        "H6125 LED Strip",
+        support_quality=SupportQuality.EXPERIMENTAL,
+        command_grammar="H617A",
+        status_grammar="H6125",
+        effect_grammar="H617A",
+        # Static replies carry the SubModeColorV2 Kelvin field, as on H6102.
+        static_readback_kelvin=True,
+        static_readback_zero_kelvin_is_rgb=True,
+        colour_mode_query_selector=1,
+        read_domains=frozenset(
+            {
+                ReadDomain.POWER,
+                ReadDomain.BRIGHTNESS,
+                ReadDomain.COLOUR_MODE,
+                ReadDomain.FIRMWARE,
+                ReadDomain.HARDWARE,
+                ReadDomain.SEGMENTS,
+            }
+        ),
+        setup_required_read_domains=frozenset({ReadDomain.POWER, ReadDomain.BRIGHTNESS, ReadDomain.COLOUR_MODE}),
+        supports_rgb=True,
+        supports_color_temperature=True,
+        supports_custom_effects=True,
+        supports_scenes=True,
+        supports_multi_layered_effects=True,
+        music_modes=(
+            "energetic",
+            "rhythm",
+            "spectrum",
+            "rolling",
+            "separation",
+            "hopping",
+            "piano_keys",
+            "fountain",
+            "day_and_night",
+            "bloom",
+            "shiny",
+        ),
+        music_variants=H6125_MUSIC_VARIANTS,
+        supports_music_color=True,
+        # The Govee app lists fifty ICs for this SKU, and its firmware reports the same count at boot.
+        physical_ic_count=50,
+        whole_device_mask=0x7FFF,
+        segment_count=15,
+        segment_group_size=3,
+        supports_segment_writes=True,
+        supports_segment_brightness=True,
+        connection_idle_timeout=3.0,
+        scene_catalogue_sku="H6125",
+        effect_readback="diy_code_only",
+        # The app writes the latest Type04 upload through this slot on the pact-1 route.
+        a1_diy_selector=0xFE,
+        # MultipleController4Music uploads the companion before the selector and waits for its acknowledgement.
+        music_upload_before_selector=True,
+        music_requires_upload_ack=True,
+    ),
     "H6179": ModelProfile(
         "H6179 RGB TV Backlight",
         support_quality=SupportQuality.EXPERIMENTAL,
@@ -758,7 +833,7 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
     ),
 }
 
-BLE_DISCOVERABLE_MODELS = frozenset({"H601C", "H6076", "H6179", "H617A", "H617C", "H617E", "H617F", "H6199"})
+BLE_DISCOVERABLE_MODELS = frozenset({"H601C", "H6076", "H6125", "H6179", "H617A", "H617C", "H617E", "H617F", "H6199"})
 
 UNSUPPORTED_PROFILE = ModelProfile("Unsupported Govee device")
 
@@ -771,6 +846,42 @@ H6199_PACT1_PROFILE = ModelProfile(
     read_domains=frozenset({ReadDomain.POWER, ReadDomain.FIRMWARE, ReadDomain.HARDWARE}),
     setup_required_read_domains=frozenset({ReadDomain.POWER}),
 )
+
+
+# Other H6125 controller generations answer only the shared power and identity frames.
+H6125_POWER_ONLY_PROFILE = ModelProfile(
+    "H6125 (power only)",
+    command_grammar="H617A",
+    command_operations=frozenset({"power"}),
+    status_grammar="H6125",
+    read_domains=frozenset({ReadDomain.POWER, ReadDomain.FIRMWARE, ReadDomain.HARDWARE}),
+    setup_required_read_domains=frozenset({ReadDomain.POWER}),
+)
+
+
+def _h6125_profile(
+    pact_type: int | None, pact_code: int | None, firmware: str | None, hardware: str | None
+) -> ModelProfile:
+    """Admit only pact 1 firmware 1.07.00+ on three-part hardware 1.00.03+; the register range follows hardware."""
+    from .firmware_version import FirmwareVersion
+    from .generated_protocol_adapter import h6125_outbound_transform
+
+    fw, hw = FirmwareVersion.parse(firmware), FirmwareVersion.parse(hardware)
+    if (
+        pact_type != 1
+        or pact_code not in (1, 2)
+        or fw is None
+        or hw is None
+        or fw < FirmwareVersion((1, 7))
+        or not FirmwareVersion((1, 0, 3)) <= hw < FirmwareVersion((2,))
+    ):
+        return H6125_POWER_ONLY_PROFILE
+    wire_range = (6, 254) if hw < FirmwareVersion((1, 0, 4)) else (20, 254)
+    return replace(
+        MODEL_PROFILES["H6125"],
+        brightness_wire_range=wire_range,
+        outbound_transform=h6125_outbound_transform(wire_range),
+    )
 
 
 def device_profile(
@@ -815,6 +926,8 @@ def device_profile(
         return profile
     if model == "H6199" and (pact_type, pact_code) == (1, 1):
         return H6199_PACT1_PROFILE
+    if model == "H6125":
+        return _h6125_profile(pact_type, pact_code, firmware, hardware)
     if model == "H6102":
         from .h6102_capabilities import resolve_h6102_capabilities
 

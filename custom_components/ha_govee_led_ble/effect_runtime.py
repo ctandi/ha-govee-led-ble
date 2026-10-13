@@ -571,13 +571,11 @@ class EffectDeploymentEngine:
                         ack_options: dict[str, Any] = {}
                         if "native_diy_positive_ack_required" in compiled.evidence_codes:
                             ack_options = {"require_upload_ack": True, "upload_ack_index": upload_count - 1}
-                        h6179_activation = (
-                            compiled.activation_packet if compiled.upload_transport == "h6179_a1_02" else None
-                        )
-                        if h6179_activation is not None:
-                            ack_options["final_packet"] = h6179_activation
+                        a1_activation = compiled.activation_packet if compiled.upload_transport == "a1_02" else None
+                        if a1_activation is not None:
+                            ack_options["final_packet"] = a1_activation
                         await coordinator.async_write_effect_sequence(
-                            compiled.upload_packets if h6179_activation is not None else compiled.packets,
+                            compiled.upload_packets if a1_activation is not None else compiled.packets,
                             intent=ControlIntent.APPLY,
                             attempt_started=attempt_started,
                             progress=record_sequence_progress,

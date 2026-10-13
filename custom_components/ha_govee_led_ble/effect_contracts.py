@@ -523,6 +523,23 @@ RELEASE_CAPABILITY_CONTRACT: Final = (
         PhysicalValidationState.NOT_VALIDATED,
         EvidenceClassification.STRUCTURAL,
     ),
+    *(
+        replace(
+            capability,
+            model="H6125",
+            verification_confidence=VerificationConfidence.SELECTION_ONLY,
+            physical_validation_state=PhysicalValidationState.NOT_VALIDATED,
+        )
+        for capability in _RELEASE_CAPABILITY_BASE
+        if capability.model == "H617A"
+        and capability.workflow
+        in {
+            CapabilityWorkflow.NATIVE_SCENES,
+            CapabilityWorkflow.SINGLE,
+            CapabilityWorkflow.MULTI,
+            CapabilityWorkflow.NATIVE_MUSIC,
+        }
+    ),
     *(capability for capability in _RELEASE_CAPABILITY_BASE if capability.model == "H617A"),
     *(replace(capability, model="H617C") for capability in _RELEASE_CAPABILITY_BASE if capability.model == "H617A"),
     *(replace(capability, model="H617E") for capability in _RELEASE_CAPABILITY_BASE if capability.model == "H617A"),

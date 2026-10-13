@@ -39,6 +39,7 @@ PROFILE = ModelProfile(
     command_grammar="H601C",
     status_grammar="H601C",
     command_operations=frozenset({"power", "brightness", "static"}),
+    colour_mode_query_selector=1,
     read_domains=frozenset(
         {ReadDomain.POWER, ReadDomain.BRIGHTNESS, ReadDomain.COLOUR_MODE, ReadDomain.FIRMWARE, ReadDomain.HARDWARE}
     ),
