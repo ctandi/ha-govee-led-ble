@@ -21,6 +21,8 @@ Do not post the Bluetooth address, serial number, account details, or other uniq
 - `coordinator*.py` owns connection lifecycle, queries, notifications, state, verification, and diagnostics.
 - `light.py`, `light_services.py`, and the model profile expose only capabilities declared for the configured device.
 - Effect Studio uses the same model profiles, capability contracts, and exact-SKU catalogues rather than a separate model architecture.
+- Device responses carry the complete catalogue resolved from the effective profile, including templates, limits, workflows and music/video settings.
+  The shared editor consumes that view without SKU-specific branches; use the shared template builders and stable template identities for every revision.
 - `scenes.py` loads committed exact-SKU Govee snapshots.  Catalogue data and BLE transport evidence remain separate.
 
 Every exact SKU has its own profile, support quality, catalogue identity, and product capability data.  Compatible models may share a Kaitai wire adapter, but do not share whole profiles or exact-SKU metadata.

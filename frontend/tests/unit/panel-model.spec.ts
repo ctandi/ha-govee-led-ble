@@ -83,11 +83,10 @@ function device(
   };
 }
 
-test("device music geometry replaces catalogue defaults without leaking across devices", () => {
+test("device catalogues carry music geometry without leaking across devices", () => {
   const model = new PanelModel(() => undefined);
-  installH6199Catalogue(model);
-  const catalogue = model.customCatalogue!.models.H6199;
-  model.customCatalogue!.models.H6099 = { ...catalogue, sku: "H6099", painted_addressing: "physical_ic" };
+  model.customCatalogue = decodeCustomCatalogue(backendContracts.responses.custom_catalogue);
+  const catalogue = model.customCatalogue.models.H6099;
   const settings = {
     piano_keys: {
       available: true, style: false, calm_default: false, colour: false, evidence: "APK", palette_size: 7,
@@ -99,8 +98,8 @@ test("device music geometry replaces catalogue defaults without leaking across d
     },
   };
   model.devices = decodeDevices([
-    { ...device("known", "H6099"), physical_ic_count: 60, music_settings: settings },
-    { ...device("unknown", "H6099"), physical_ic_count: null, music_settings: {} },
+    { ...device("known", "H6099"), physical_ic_count: 60, catalogue: {...catalogue, music_settings: settings} },
+    { ...device("unknown", "H6099"), physical_ic_count: null, catalogue: {...catalogue, music_settings: {}} },
   ]);
   model.selectedDeviceId = "known";
   expect(model.modelCatalogue?.physical_ic_count).toBe(60);
@@ -129,15 +128,42 @@ test("effective music roster filters modes and templates on device subscription 
   const modes = catalogue.music_modes;
   expect(modes.length).toBeGreaterThan(4);
   const basic = Object.fromEntries(modes.slice(0, 4).map(mode => [mode.id, catalogue.music_settings[mode.id]]));
-  model.devices = [{ ...device("target", "H6102"), music_settings: basic }];
+  model.devices = [{ ...device("target", "H6102"), catalogue: {
+    ...catalogue, music_settings: basic, music_modes: modes.slice(0, 4), templates: catalogue.templates.slice(0, 4),
+  } }];
   model.selectedDeviceId = "target";
   expect(model.modelCatalogue!.music_modes).toHaveLength(4);
   expect(model.modelCatalogue!.templates!.filter(t => t.content.kind === "music_profile")).toHaveLength(4);
-  model.devices = [{ ...device("target", "H6102"), music_settings: catalogue.music_settings }];
+  model.devices = [{ ...device("target", "H6102"), catalogue }];
   expect(model.modelCatalogue!.music_modes).toHaveLength(modes.length);
-  model.devices = [{ ...device("target", "H6102"), music_settings: {} }];
+  model.devices = [{ ...device("target", "H6102"), catalogue: {...catalogue, music_settings: {}, music_modes: [], templates: []} }];
   expect(model.modelCatalogue!.music_modes).toEqual([]);
   expect(catalogue.music_modes).toBe(modes);
+});
+
+test("same-SKU revisions select their complete device catalogue without changing shared defaults", () => {
+  const model = new PanelModel(() => undefined);
+  model.customCatalogue = decodeCustomCatalogue(backendContracts.responses.custom_catalogue);
+  model.devices = decodeDevices(backendContracts.responses.devices).filter(device => device.model === "H6199");
+  model.selectedDeviceId = "h6199-pact1";
+  expect(model.modelCatalogue?.apply).toMatchObject({single: "supported", multi: "supported", palette_diy: "unsupported"});
+  expect(model.modelCatalogue?.effects[0].variations.map(variation => variation.variant)).toEqual([0, 1, 2]);
+  expect(model.modelCatalogue?.limits.music_sensitivity_max).toBe(99);
+  expect(model.modelCatalogue?.video_settings).toContain("inline_brightness");
+  expect(model.modelCatalogue?.templates?.find(template => template.id === "template:single:0:0")?.content.kind).toBe("h617a_single");
+  expect(model.customEffectCategoryAvailable("multi-layer")).toBe(true);
+
+  model.selectedDeviceId = "h6199-main";
+  const modern = model.modelCatalogue;
+  expect(modern?.apply).toMatchObject({single: "unsupported", multi: "unsupported", palette_diy: "supported"});
+  expect(modern?.limits.music_sensitivity_max).toBe(100);
+  expect(modern?.video_settings).not.toContain("inline_brightness");
+  expect(model.customEffectCategoryAvailable("multi-layer")).toBe(false);
+  model.selectedDeviceId = "h6199-pact1";
+  model.devices = model.devices.map(device =>
+    device.config_entry_id === "h6199-pact1" ? {...device, catalogue: modern} : device);
+  expect(model.modelCatalogue).toBe(modern);
+  expect(model.customCatalogue.models.H6199).toBe(modern);
 });
 
 test("live video conditions reject requested settings without stripping persisted content", () => {

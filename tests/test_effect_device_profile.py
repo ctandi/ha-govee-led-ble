@@ -9,7 +9,13 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.ha_govee_led_ble.const import DOMAIN, EFFECT_FAMILY_MUSIC, ReadDomain, get_profile
+from custom_components.ha_govee_led_ble.const import (
+    DOMAIN,
+    EFFECT_FAMILY_MUSIC,
+    ReadDomain,
+    device_profile,
+    get_profile,
+)
 from custom_components.ha_govee_led_ble.coordinator import GoveeBLECoordinator
 from custom_components.ha_govee_led_ble.coordinator_status import ParsedMode
 from custom_components.ha_govee_led_ble.effect_active_workspace import ActiveEffectWorkspace
@@ -372,7 +378,8 @@ async def test_websocket_apply_and_device_payload_use_aa40(hass, hass_ws_client,
     response = await client.receive_json()
     device = response["result"]["device"]
     assert device["physical_ic_count"] == 60 and device["segment_count"] == 14
-    settings = device["music_settings"]
+    assert "music_settings" not in device
+    settings = device["catalogue"]["music_settings"]
     assert settings["piano_keys"]["parameters"]["key_count"] == {
         "kind": "number",
         "default": 18,
@@ -405,6 +412,34 @@ async def test_websocket_apply_and_device_payload_use_aa40(hass, hass_ws_client,
         assert response["success"] is True, response
         assert response["result"]["deployment"]["phase"] == "confirmed"
         assert physical.await_count == 4
+
+
+@pytest.mark.parametrize("pact,kind", [(1, "h617a_single"), (2, "palette_diy")])
+async def test_websocket_catalogue_and_template_defaults_follow_device_revision(
+    hass, hass_ws_client, monkeypatch, pact, kind
+):
+    await _setup_backend(hass)
+    c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url="test")
+    c.profile = device_profile("H6199", pact, 1, firmware="1.07.02", hardware="1.00.01")
+    entry = SimpleNamespace(
+        entry_id="entry-a", domain=DOMAIN, title="Device", state=ConfigEntryState.LOADED, runtime_data=c
+    )
+    monkeypatch.setattr(hass.config_entries, "async_get_entry", lambda _: entry)
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": WS_DEVICE, "config_entry_id": entry.entry_id})
+    response = await client.receive_json()
+    catalogue = response["result"]["device"]["catalogue"]
+    assert catalogue["sku"] == "H6199"
+    assert ("inline_brightness" in catalogue["video_settings"]) is (pact == 1)
+    assert catalogue["limits"]["music_sensitivity_max"] == (99 if pact == 1 else 100)
+    template = next(item for item in catalogue["templates"] if item["id"] == "template:single:0:0")
+    assert template["category"] == "single-layer" and template["content"]["kind"] == kind
+    await client.send_json_auto_id(
+        {"type": WS_TEMPLATE_DEFAULT_GET, "config_entry_id": entry.entry_id, "template_id": template["id"]}
+    )
+    response = await client.receive_json()
+    assert response["success"] is True, response
+    assert response["result"]["content"] == template["content"]
 
 
 @pytest.mark.parametrize("saved", [False, True])

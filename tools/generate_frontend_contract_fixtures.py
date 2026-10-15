@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
-from custom_components.ha_govee_led_ble.const import MODEL_PROFILES
+from custom_components.ha_govee_led_ble.const import MODEL_PROFILES, device_profile
 from custom_components.ha_govee_led_ble.effect_catalogue import (
     MODEL_EFFECT_CATALOGUES,
     WORKSHOP_PROTOCOL_FIXTURES,
@@ -52,7 +52,7 @@ from custom_components.ha_govee_led_ble.effect_preview import (
 )
 from custom_components.ha_govee_led_ble.effect_scenes import scene_catalogue_payload, scene_detail_payload
 from custom_components.ha_govee_led_ble.effect_storage import LibrarySnapshot
-from custom_components.ha_govee_led_ble.effect_websocket_payloads import library_snapshot_payload
+from custom_components.ha_govee_led_ble.effect_websocket_payloads import device_catalogue, library_snapshot_payload
 from custom_components.ha_govee_led_ble.scenes import SCENE_ENTRIES
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -83,20 +83,16 @@ def _painted_segments() -> tuple[tuple[int, int, int] | None, ...]:
     return ((255, 0, 0),) * 3 + (None,) * 12
 
 
+def _compact_model_catalogue(catalogue: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(catalogue)
+    for field in ("painted_effects", "effects", "music_modes", "video_modes", "workshop_templates"):
+        compact[field] = cast(list[Any], compact[field])[:1]
+    return compact
+
+
 def _compact_custom_catalogue(catalogue: dict[str, Any]) -> dict[str, Any]:
     models = cast(dict[str, dict[str, Any]], catalogue["models"])
-    compact_models: dict[str, dict[str, Any]] = {}
-    for model in MODELS:
-        compact = dict(models[model])
-        for field in (
-            "painted_effects",
-            "effects",
-            "music_modes",
-            "video_modes",
-            "workshop_templates",
-        ):
-            compact[field] = cast(list[Any], compact[field])[:1]
-        compact_models[model] = compact
+    compact_models = {model: _compact_model_catalogue(models[model]) for model in MODELS}
     return {
         "schema_version": catalogue["schema_version"],
         **compact_models["H617A"],
@@ -286,17 +282,31 @@ def rendered_data() -> str:
     )
     library_snapshot = LibrarySnapshot((item, scene_item, h6179_diy_item, h6179_music_item))
     devices = []
-    for model in MODELS:
+    for entry_id, model, profile in (
+        *((f"{model.lower()}-main", model, None) for model in MODELS),
+        ("h6199-pact1", "H6199", device_profile("H6199", 1, 1, firmware="1.07.02", hardware="1.00.01")),
+    ):
         device = device_effect_capabilities(
-            f"{model.lower()}-main",
+            entry_id,
             model,
             MODEL_PROFILES[model].name,
             MODEL_PROFILES[model].segment_count,
             light_entity_id="light.h617a_main" if model == "H617A" else None,
+            profile=profile,
         ).to_dict()
+        if profile is not None:
+            effective = _compact_model_catalogue(device_catalogue(model, profile=profile)["catalogue"])
+            templates: dict[str, Any] = {}
+            for template in effective["templates"]:
+                templates.setdefault(template["content"]["kind"], template)
+            effective["templates"] = list(templates.values())
+            effective["music_settings"] = {
+                mode["id"]: effective["music_settings"][mode["id"]] for mode in effective["music_modes"]
+            }
+            device["catalogue"] = effective
         device["active_state"] = active_state.to_public_dict() if model == "H617A" else None
         device["preview_health"] = PreviewHealthStatus(
-            config_entry_id=f"{model.lower()}-main",
+            config_entry_id=entry_id,
             revision=1,
             phase=PreviewHealthPhase.HEALTHY,
             incident_id=None,

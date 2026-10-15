@@ -78,7 +78,7 @@ from .effect_storage import (
 from .effect_template_defaults import CatalogueTemplateDefault
 from .effect_websocket_payloads import (
     deployment_snapshot_payload,
-    device_music_settings,
+    device_catalogue,
     item_summary,
     library_snapshot_payload,
     retained_music_edit,
@@ -227,7 +227,7 @@ def _device_payload(
         profile=coordinator.profile,
     ).to_dict()
     device["active_state"] = observed.to_public_dict()
-    device.update(device_music_settings(coordinator.model, profile=coordinator.profile))
+    device.update(device_catalogue(coordinator.model, profile=coordinator.profile))
     device["retained_music_edit"] = retained_music_edit(coordinator)
     device["video_control_states"] = {
         key: value.value for key, value in video_control_states(coordinator.profile, coordinator).items()

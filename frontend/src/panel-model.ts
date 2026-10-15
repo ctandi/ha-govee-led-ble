@@ -330,18 +330,10 @@ export class PanelModel {
   }
 
   public get modelCatalogue(): ModelEffectCatalogue | undefined {
-    const model = this.selectedModel;
-    const catalogue = model ? this.customCatalogue?.models[model] : undefined;
-    return catalogue && (catalogue.painted_addressing === "physical_ic" || this.selectedDevice?.music_settings !== undefined)
-      ? {
-          ...catalogue,
-          physical_ic_count: this.selectedDevice?.physical_ic_count,
-          music_settings: this.selectedDevice?.music_settings ?? catalogue.music_settings,
-          music_modes: catalogue.music_modes.filter(mode =>
-            this.selectedDevice?.music_settings === undefined || mode.id in this.selectedDevice.music_settings),
-          templates: catalogue.templates?.filter(template => template.content.kind !== "music_profile" ||
-            this.selectedDevice?.music_settings === undefined || template.content.mode in this.selectedDevice.music_settings),
-        }
+    const device = this.selectedDevice;
+    const catalogue = device?.catalogue ?? (device ? this.customCatalogue?.models[device.model] : undefined);
+    return catalogue?.painted_addressing === "physical_ic"
+      ? { ...catalogue, physical_ic_count: device?.physical_ic_count }
       : catalogue;
   }
 

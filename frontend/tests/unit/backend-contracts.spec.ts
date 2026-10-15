@@ -59,7 +59,9 @@ test("canonical backend responses decode through the production validators", () 
     "H617E",
     "H6179",
     "H6199",
+    "H6199",
   ]);
+  expect(devices.find(device => device.config_entry_id === "h6199-pact1")?.catalogue?.video_settings).toContain("inline_brightness");
   expect(devices.find((device) => device.model === "H617A")?.light_entity_id).toBe("light.h617a_main");
   expect(devices.find((device) => device.model === "H617E")?.light_entity_id).toBeNull();
   expect(devices.find((device) => device.model === "H617A")?.active_state?.active_effect?.observable_signature).toBe(
@@ -328,6 +330,13 @@ describe("focused response mutations", () => {
     invalid[0].light_entity_id = "switch.cupboard";
     expect(() => decodeDevices(invalid)).toThrow(
       "devices[0].light_entity_id must identify a light entity",
+    );
+  });
+
+  test("device catalogues must match the device model", () => {
+    const device = responses.devices.find(device => device.config_entry_id === "h6199-pact1");
+    expect(() => decodeDevices([{...device, model: "H6099"}])).toThrow(
+      "device catalogue is keyed as H6099 but declares H6199",
     );
   });
 

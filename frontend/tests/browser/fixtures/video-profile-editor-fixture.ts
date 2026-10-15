@@ -1,5 +1,7 @@
 import "../../../src/video-profile-editor";
 import type { GoveeVideoProfileEditor } from "../../../src/video-profile-editor";
+import { decodeDevices } from "../../../src/validation";
+import backendContracts from "../../fixtures/backend-contracts.json";
 
 const editor = document.querySelector<GoveeVideoProfileEditor>(
   "govee-video-profile-editor",
@@ -52,8 +54,12 @@ if (new URLSearchParams(location.search).has("h6099")) {
   });
 }
 if (new URLSearchParams(location.search).has("legacy")) {
-  editor.settings = ["saturation", "inline_brightness"];
-  editor.content = {...editor.content, model: "H6199", inline_brightness: 50};
+  const catalogue = decodeDevices(backendContracts.responses.devices).find(device => device.config_entry_id === "h6199-pact1")?.catalogue;
+  const template = catalogue?.templates?.find(template => template.id === "template:video:movie");
+  if (!catalogue || template?.content.kind !== "video_profile") throw new Error("Missing Pact 1 video catalogue.");
+  editor.settings = catalogue.video_settings;
+  editor.controls = catalogue.video_controls;
+  editor.content = template.content;
   editor.applicability = {inline_brightness: "supported"};
   editor.addEventListener("content-changed", event => {
     editor.content = (event as CustomEvent).detail.content;

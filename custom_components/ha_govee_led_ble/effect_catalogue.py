@@ -231,15 +231,7 @@ class ModelEffectCatalogue:
             self,
             effects=H6199_PACT1_DIY_FAMILIES,
             templates=(
-                *(
-                    CatalogueTemplate(
-                        f"template:pact1_{family.id}",
-                        family.label,
-                        "single_layer",
-                        SingleEffect(family.family, family.variations[0].variant, 50, (DEFAULT_PALETTE[0],)),
-                    )
-                    for family in H6199_PACT1_DIY_FAMILIES
-                ),
+                *(_single_template(self.sku, family, profile=profile) for family in H6199_PACT1_DIY_FAMILIES),
                 *(
                     _music_template(self.sku, mode, profile=profile)
                     for mode in self.music_modes
@@ -770,11 +762,11 @@ def _video_profile_settings(profile: ModelProfile) -> tuple[str, ...]:
 H6199_VIDEO_MODES: Final = _native_video_modes("H6199")
 
 
-def _single_template(model: str, family: DiyEffectFamily) -> CatalogueTemplate:
+def _single_template(model: str, family: DiyEffectFamily, *, profile: ModelProfile | None = None) -> CatalogueTemplate:
     variation = family.variations[0]
     content: EffectContent
-    grammar = get_profile(model).effect_grammar
-    if grammar in {"H617A", "H6099"}:
+    grammar = (profile or get_profile(model)).effect_grammar
+    if grammar in {"H617A", "H6099", "H6199-Pact1"}:
         content = SingleEffect(
             family=family.family,
             variant=variation.variant,

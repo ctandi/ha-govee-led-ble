@@ -27,7 +27,7 @@ import type {
   VideoProfileContent,
   WorkshopContent,
 } from "./types";
-import { decodeCustomCataloguePayload, decodeMusicSettings } from "./catalogue-validation";
+import { decodeCustomCataloguePayload, decodeModelEffectCatalogue, decodeMusicSettings } from "./catalogue-validation";
 import {
   EDITOR_API_VERSION,
   EFFECT_COMPILER_VERSION,
@@ -183,8 +183,11 @@ export function decodeDevices(value: unknown): DeviceCapabilities[] {
       ...(device.physical_ic_count == null ? {} : {
         physical_ic_count: integerValue(device.physical_ic_count, "physical IC count", 1, 32767),
       }),
-      ...(device.music_settings === undefined ? {} : {
-        music_settings: decodeMusicSettings(device.music_settings),
+      ...(device.catalogue === undefined ? {} : {
+        catalogue: decodeModelEffectCatalogue(
+          device.catalogue, "device catalogue",
+          boundedString(device.model, "device model", MAX_IDENTIFIER_LENGTH), decodeEffectContent,
+        ),
       }),
       ...(device.retained_music_edit === undefined ? {} : {
         retained_music_edit: decodeRetainedMusicEdit(device.retained_music_edit),

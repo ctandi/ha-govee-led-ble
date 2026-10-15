@@ -77,6 +77,7 @@ const VIDEO_PROFILE_SETTINGS = [
   "capture_region",
   "saturation",
   "sound_effects",
+  "inline_brightness",
   "white_balance",
   "relative_brightness",
   "blank_screen",
@@ -152,7 +153,7 @@ function decodeModelCatalogues(
   );
 }
 
-function decodeModelEffectCatalogue(
+export function decodeModelEffectCatalogue(
   value: unknown,
   name: string,
   expectedSku: string,

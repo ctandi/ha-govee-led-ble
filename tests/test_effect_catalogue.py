@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-from custom_components.ha_govee_led_ble.const import MODEL_PROFILES, MUSIC_MODE_SLUGS
+from custom_components.ha_govee_led_ble.const import MODEL_PROFILES, MUSIC_MODE_SLUGS, device_profile
 from custom_components.ha_govee_led_ble.coordinator_expectations import expectations_from_packet
 from custom_components.ha_govee_led_ble.coordinator_status import ParsedMode
 from custom_components.ha_govee_led_ble.effect_catalogue import (
@@ -26,6 +26,7 @@ from custom_components.ha_govee_led_ble.effect_catalogue import (
     custom_effect_catalogue_payload,
     resolve_catalogue_template,
     validate_catalogue_template_identity,
+    validate_effect_eligibility,
 )
 from custom_components.ha_govee_led_ble.effect_contracts import (
     RELEASE_CAPABILITY_CONTRACT,
@@ -435,16 +436,29 @@ def test_catalogue_template_identity_rejects_cross_template_content() -> None:
         )
 
 
-@pytest.mark.parametrize("grammar", ["H617A", "H6199", None, "unknown"])
+def test_revision_templates_keep_shared_ids_categories_and_authoring_limits():
+    profile = device_profile("H6199", 1, 1, firmware="1.07.02", hardware="1.00.01")
+    catalogue = MODEL_EFFECT_CATALOGUES["H6199"].for_profile(profile)
+    for family in catalogue.effects:
+        template_id = f"template:single:{family.family}:{family.variations[0].variant}"
+        template = resolve_catalogue_template("H6199", template_id, profile=profile)
+        assert template.category == "single-layer" and isinstance(template.content, SingleEffect)
+        validate_effect_eligibility(template.content, "H6199", profile=profile)
+        assert validate_catalogue_template_identity("H6199", template_id, template.content, profile=profile) == template
+        modern = resolve_catalogue_template("H6199", template_id)
+        assert isinstance(modern.content, PaletteDiyEffect)
+
+
+@pytest.mark.parametrize("grammar", ["H617A", "H6199", "H6199-Pact1", None, "unknown"])
 def test_single_template_requires_effect_grammar_without_granting_catalogue(monkeypatch, grammar):
     model = "H7000"
     monkeypatch.setitem(
         MODEL_PROFILES, model, replace(MODEL_PROFILES["H617A"], effect_grammar=grammar, scene_catalogue_sku=None)
     )
     family = H617A_TYPE04_FAMILIES[0]
-    if grammar in {"H617A", "H6199"}:
+    if grammar in {"H617A", "H6199", "H6199-Pact1"}:
         content = _single_template(model, family).content
-        assert isinstance(content, SingleEffect if grammar == "H617A" else PaletteDiyEffect)
+        assert isinstance(content, PaletteDiyEffect if grammar == "H6199" else SingleEffect)
         if isinstance(content, PaletteDiyEffect):
             assert content.model == model
     else:
