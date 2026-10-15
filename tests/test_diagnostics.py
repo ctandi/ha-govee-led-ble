@@ -66,12 +66,13 @@ async def test_surfaces_segment_fields(mock_h6199_coordinator):
     assert coord["segment_colors"] == colors
     assert coord["segment_brightness"] == [100] * 15
     assert coord["segment_state_source"] == "initial"
+    assert coord["segment_brightness_source"] == "initial"
     assert coord["segment_state_observed_at"] is None
     assert coord["subordinate_20_version"] is None
     assert coord["subordinate_21_version"] is None
     assert coord["diy_code"] is None
     assert coord["color_mode"] is None
-    assert coord["effect_categories"] == ["advanced", "effects", "reactive", "scenes", "video"]
+    assert coord["effect_categories"] == ["advanced", "effects", "multi_layered", "reactive", "scenes", "video"]
     assert coord["prefix_effect_names"] is False
     assert coord["always_include_custom_effects"] is False
 

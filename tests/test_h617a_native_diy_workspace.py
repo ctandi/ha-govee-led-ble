@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from custom_components.ha_govee_led_ble.const import get_profile
 from custom_components.ha_govee_led_ble.effect_active_workspace import (
     ActiveEffectWorkspace,
     ActiveEffectWorkspaceRepository,
@@ -65,6 +66,7 @@ async def test_workspace_persist_reload_recompile_retains_native_carrier_and_ack
     assert restored is not None
     coordinator: Any = SimpleNamespace(
         model="H617A",
+        profile=get_profile("H617A"),
         is_on=True,
         scene_code=code,
         diy_code=None,

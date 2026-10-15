@@ -19,7 +19,7 @@ seq:
       cases:
         'query_domain::power': zero_body
         'query_domain::brightness': zero_body
-        'query_domain::colour_mode': zero_body
+        'query_domain::colour_mode': colour_mode_query_body
         'query_domain::firmware': zero_body
         'query_domain::hardware': hardware_query_body
         'query_domain::identity': zero_body
@@ -56,6 +56,16 @@ enums:
     0x06: scalar_white_balance
     0x0a: blank_screen
 types:
+  colour_mode_query_body:
+    seq:
+      - id: selector
+        type: u1
+        valid:
+          any-of: [0, 1]
+      - id: zeros
+        type: u1
+        valid: 0
+        repeat: eos
   zero_body:
     seq:
       - id: zeros

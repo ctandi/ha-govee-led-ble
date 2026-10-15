@@ -85,7 +85,11 @@ class _ActiveModeMixin(_CoordinatorBase):
     def music_calm(self) -> bool:
         if self._music_calm is not None:
             return self._music_calm
-        mode_code = music_code_for(self.model, self.music_mode) if self.music_mode in self.profile.music_modes else -1
+        mode_code = (
+            music_code_for(self.model, self.music_mode, profile=self.profile)
+            if self.music_mode in self.profile.music_modes
+            else -1
+        )
         variant = music_variant(self.profile, mode_code)
         return variant.calm_default if variant and variant.supports_style else False
 
@@ -152,8 +156,12 @@ class _ActiveModeMixin(_CoordinatorBase):
     ) -> None:
         from .effect_compiler import require_native_scenes
 
+        profile = self.profile
+
         def qualified() -> None:
             require_native_scenes(self.model, self.profile)
+            if self.profile != profile:
+                raise ValueError("Device profile changed before scene write; refresh and retry")
 
         qualified()
         if scene_entry is None:
@@ -169,6 +177,7 @@ class _ActiveModeMixin(_CoordinatorBase):
             scene,
             speed_index=speed_index,
             canonical_body=canonical_body,
+            profile=profile,
         )
 
         power_in_sequence = False
@@ -191,18 +200,29 @@ class _ActiveModeMixin(_CoordinatorBase):
                     raise RuntimeError(f"Failed to confirm power-on before selecting scene {scene_name!r}")
 
         async def apply() -> None:
-            if writer is not None:
+            needs_ack = self.profile.scene_requires_upload_ack and len(packets) - int(power_in_sequence) > 1
+            if writer is not None and not needs_ack:
                 for packet in packets:
                     qualified()
                     await writer(packet)
                     qualified()
                 return
+            options: dict[str, Any] = (
+                {
+                    "require_upload_ack": True,
+                    "upload_ack_index": len(packets) - 2,
+                    "writer": writer,
+                }
+                if needs_ack
+                else {}
+            )
             await self.async_write_effect_sequence(
                 packets,
                 intent=intent,
                 before_write=before_write,
                 progress=progress,
                 write_guard=qualified,
+                **options,
             )
 
         await apply()
@@ -246,10 +266,10 @@ class _ActiveModeMixin(_CoordinatorBase):
             return
         if slug not in self.profile.music_modes:
             raise ValueError(f"{self.model} does not support music mode {slug}")
-        mode_id = music_code_for(self.model, slug)
+        mode_id = music_code_for(self.model, slug, profile=self.profile)
         variant = music_variant(self.profile, mode_id)
         supports_style = (variant is not None and variant.supports_style) or music_mode_supports_style(
-            self.model, mode_id
+            self.model, mode_id, profile=self.profile
         )
         calm_default = variant.calm_default if variant is not None else False
         calm = (self._music_calm if self._music_calm is not None else calm_default) if supports_style else False
@@ -325,7 +345,9 @@ class _ActiveModeMixin(_CoordinatorBase):
 
         def guard(index: int) -> None:
             nonlocal attempted_upload, revision
-            if mode_code not in (music_code_for(self.model, slug) for slug in self.profile.music_modes):
+            if mode_code not in (
+                music_code_for(self.model, slug, profile=self.profile) for slug in self.profile.music_modes
+            ):
                 raise ValueError("Device profile no longer supports the requested music mode")
             if dependent and physical_ic_count != self.profile.physical_ic_count:
                 raise ValueError("Physical IC count changed since preparation; refresh and retry")
@@ -375,7 +397,10 @@ class _ActiveModeMixin(_CoordinatorBase):
         parameters: Mapping[str, Any] | None = None,
         calm: bool | None = None,
     ) -> None:
-        if self.music_mode not in self.profile.music_modes or music_code_for(self.model, self.music_mode) != mode_code:
+        if (
+            self.music_mode not in self.profile.music_modes
+            or music_code_for(self.model, self.music_mode, profile=self.profile) != mode_code
+        ):
             raise ValueError("Cannot preserve unknown music body; select or apply a complete profile")
         if self.music_body is None:
             raise ValueError("Cannot preserve unknown music body; select or apply a complete profile")

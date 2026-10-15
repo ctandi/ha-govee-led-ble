@@ -1041,6 +1041,9 @@ export function decodeEffectContent(value: unknown): EffectContent {
         ...(content.white_balance_value === undefined ? {} : {
           white_balance_value: integerValue(content.white_balance_value, "video white balance", 0, 255),
         }),
+        ...(content.inline_brightness === undefined ? {} : {
+          inline_brightness: integerValue(content.inline_brightness, "video brightness", 1, 100),
+        }),
         relative_brightness: nullableRelativeBrightnessValue(
           content.relative_brightness,
           "video profile relative brightness",

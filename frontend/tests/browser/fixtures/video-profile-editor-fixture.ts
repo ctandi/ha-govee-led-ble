@@ -51,3 +51,11 @@ if (new URLSearchParams(location.search).has("h6099")) {
     editor.content = (event as CustomEvent).detail.content;
   });
 }
+if (new URLSearchParams(location.search).has("legacy")) {
+  editor.settings = ["saturation", "inline_brightness"];
+  editor.content = {...editor.content, model: "H6199", inline_brightness: 50};
+  editor.applicability = {inline_brightness: "supported"};
+  editor.addEventListener("content-changed", event => {
+    editor.content = (event as CustomEvent).detail.content;
+  });
+}

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.core import HomeAssistant
 
+from custom_components.ha_govee_led_ble.const import get_profile
 from custom_components.ha_govee_led_ble.effect_scene_defaults import NativeSceneDefault, NativeSceneDefaultRepository
 from custom_components.ha_govee_led_ble.effect_scenes import (
     async_apply_scene,
@@ -312,6 +313,7 @@ async def test_scene_without_speed_uses_coordinator_primitive(
     scene = next(item for item in SCENE_ENTRIES["H617A"] if item.speed is None)
     coordinator = SimpleNamespace(
         model="H617A",
+        profile=get_profile("H617A"),
         async_apply_native_scene=AsyncMock(),
     )
     entry = SimpleNamespace(entry_id="entry-a", runtime_data=coordinator)
@@ -354,6 +356,7 @@ async def test_scene_application_uses_the_stored_device_default(
     )
     coordinator = SimpleNamespace(
         model="H617A",
+        profile=get_profile("H617A"),
         async_apply_native_scene=AsyncMock(),
     )
     entry = SimpleNamespace(entry_id="entry-a", runtime_data=coordinator)

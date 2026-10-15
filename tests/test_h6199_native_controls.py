@@ -1,6 +1,7 @@
 """Direct-register replay and software qualification; not official-app captures."""
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -16,6 +17,7 @@ from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
     H6199StatusQuery,
     build_h6199_control,
     build_h6199_control_query,
+    h6199_pact1_outbound_transform,
     parse_command,
     parse_command_ack_result,
     parse_h6199_control,
@@ -23,6 +25,7 @@ from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
 )
 from custom_components.ha_govee_led_ble.light import GoveeBLELight
 from custom_components.ha_govee_led_ble.transport import xor_checksum
+from custom_components.ha_govee_led_ble.video_applicability import h6199_camera_controls_state
 
 
 def frame(prefix):
@@ -99,6 +102,47 @@ async def test_diy_static_and_camera_observation_preserve_light(coordinator):
     assert diagnostic.native_value == "unknown" and light.available
     c._clear_client_state(c._client)
     assert c.camera_status == "unknown" and c.gradient is None
+
+
+async def test_legacy_controls_use_individual_declarations_and_legacy_status_root(coordinator):
+    c = coordinator
+    c.pact_type, c.pact_code = 1, 1
+    c.fw_version, c.hw_version = "1.07.02", "1.00.01"
+    c.subordinate_20_version = c.subordinate_21_version = None
+    c.profile = replace(
+        c.profile,
+        effect_grammar="H6199-Pact1",
+        status_grammar="H6199-Pact1",
+        outbound_transform=h6199_pact1_outbound_transform,
+        brightness_wire_range=(20, 254),
+    )
+
+    async def respond(_uuid, packet, **kwargs):
+        for control in H6199_NATIVE_CONTROLS[:-1]:
+            if packet == build_h6199_control_query(control):
+                prefix = packet[:2] + b"\x01"
+                c._notify_callback(None, bytearray(frame(prefix.hex())))
+
+    c._client.write_gatt_char.side_effect = respond
+    for control in H6199_NATIVE_CONTROLS[:-1]:
+        await c.async_set_h6199_control(control, 1, timeout=0.01)
+        assert getattr(c, control) == 1
+    c._notify_callback(None, bytearray(frame("aa050b010fa0")))
+    assert c.gradient == 1 and c.color_mode is ParsedMode.COLOUR
+    assert c.color_temp_kelvin_source != "observed"
+    c.is_on = True
+    c._notify_callback(None, bytearray(frame("aa3200")))
+    assert c.camera_status == "absent" and c.is_on
+    c.profile = replace(c.profile, h6199_controls=frozenset({"gradient"}))
+    assert h6199_camera_controls_state(c.model, c, "gradient").value == "supported"
+    assert h6199_camera_controls_state(c.model, c, "camera_position").value == "unsupported"
+    c.camera_position = None
+    c._notify_callback(None, bytearray(frame("aa3101")))
+    assert c.camera_position is None
+    before = c._client.write_gatt_char.await_count
+    with pytest.raises(ValueError, match="not qualified"):
+        await c.async_set_h6199_control("camera_position", 1)
+    assert c._client.write_gatt_char.await_count == before
 
 
 @pytest.mark.parametrize("control,opcode", [("strip_direction", "30"), ("camera_position", "31"), ("gradient", "a3")])

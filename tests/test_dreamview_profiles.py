@@ -5,15 +5,18 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from bleak import BleakError
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 
+from custom_components.ha_govee_led_ble import coordinator as coordinator_module
 from custom_components.ha_govee_led_ble.const import DOMAIN, MODEL_PROFILES, ModelProfile, ReadDomain, get_profile
 from custom_components.ha_govee_led_ble.dreamview import (
     DREAMVIEW_READ_SETTINGS,
     build_dreamview_command,
     build_dreamview_group,
     build_dreamview_query,
+    parse_dreamview_status,
 )
 from custom_components.ha_govee_led_ble.dreamview_services import _async_dreamview_service
 from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
@@ -21,8 +24,9 @@ from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
     H6199StatusReply,
     build_brightness,
     build_power,
+    h6199_pact1_outbound_transform,
 )
-from custom_components.ha_govee_led_ble.transport import reassemble_a3
+from custom_components.ha_govee_led_ble.transport import reassemble_a3, xor_checksum
 from tests.test_govee_encryption import client as ble_client
 from tests.test_h6099_dreamview import coordinator, frame, member
 
@@ -46,6 +50,185 @@ def profiles(monkeypatch):
                 dreamview_max_sub_devices=capacity,
             ),
         )
+    monkeypatch.setitem(
+        MODEL_PROFILES,
+        "H9919",
+        ModelProfile(
+            "Synthetic original DreamView",
+            command_grammar="H6199",
+            command_operations=frozenset({"power"}),
+            status_grammar="dreamview-test-status",
+            read_domains=frozenset({ReadDomain.POWER}),
+            dreamview_grammar="H6199-Pact1",
+            dreamview_operations=frozenset((*DREAMVIEW_READ_SETTINGS, "replace_group", "delete_group")),
+            dreamview_reads=frozenset(DREAMVIEW_READ_SETTINGS),
+            dreamview_max_sub_devices=5,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "setting, values, write, query",
+    [
+        ("switch_group", {"enabled": True}, "335401", "aa54"),
+        ("member_brightness", {"level": 42, "index": 4}, "33502a04", "aa50"),
+        ("same_brightness", {"enabled": True}, "33600401", "aa6004"),
+        ("member_connect", {"index": 4, "connected": True}, "33430401", "aa43"),
+        ("saturation", {"saturation": 50}, "335132", "aa51"),
+        ("sample", {"sample_first": 1, "sample_second": 2}, "33520102", "aa52"),
+        ("sound", {"enabled": True, "softness": 50}, "33530132", "aa53"),
+        ("delete_group", {}, "3356", None),
+    ],
+)
+def test_original_dreamview_synthetic_envelopes(profiles, setting, values, write, query):
+    """Application-derived bytes test dispatch, not real H6199 authorisation."""
+    profile = get_profile("H9919")
+    assert build_dreamview_command(setting, values, profile) == frame(write)
+    assert h6199_pact1_outbound_transform(frame(write)) == frame(write)
+    if query is not None:
+        assert build_dreamview_query(setting, profile) == frame(query)
+        assert h6199_pact1_outbound_transform(frame(query)) == frame(query)
+    with pytest.raises(ValueError, match="not supported"):
+        build_dreamview_command(setting, values, get_profile("H6199"))
+
+
+async def test_original_dreamview_slots_and_coordinator_routing(hass, profiles):
+    c = coordinator(hass, "H9919")
+    raw = bytes(range(17))
+    body = b"\xaa\x50" + raw
+    packet = body + bytes((xor_checksum(body),))
+    parsed = parse_dreamview_status(packet, profile=c.profile)
+    assert parsed == ("member_brightness", {"brightness_bytes": list(raw), "unknown": []})
+    assert parse_dreamview_status(packet, profile=get_profile("H6099")) is None
+    assert parse_dreamview_status(packet, profile=get_profile("H6199")) is None
+    assert c._handle_dreamview_notification(packet)
+    assert c._dreamview_observed["member_brightness"]["brightness_bytes"] == list(raw)
+    assert not c._handle_dreamview_notification(frame("aa600301"))
+    assert not c._handle_dreamview_notification(frame("335000"))
+    assert c._dreamview_authored is None
+    connection_body = b"\xaa\x43" + raw
+    connection = connection_body + bytes((xor_checksum(connection_body),))
+    assert parse_dreamview_status(connection, profile=c.profile) == (
+        "member_connect",
+        {"connection_bytes": list(raw[:10]), "unknown": list(raw[10:])},
+    )
+    client = ble_client()
+    c._client = client
+    c._ensure_connected = AsyncMock(return_value=client)
+    c._renew_foreground_lease = Mock()
+    entity = SimpleNamespace(coordinator=c, _async_supersede_preview=AsyncMock())
+    await _async_dreamview_service(
+        entity,
+        ServiceCall(hass, DOMAIN, "set_dreamview_member_brightness", {"index": 4, "level": 42}),
+        name="set_dreamview_member_brightness",
+    )
+    assert client.write_gatt_char.call_args.args[1] == frame("33502a04")
+    entity._async_supersede_preview.reset_mock()
+    client.write_gatt_char.reset_mock()
+    with pytest.raises(ServiceValidationError):
+        await _async_dreamview_service(
+            entity,
+            ServiceCall(hass, DOMAIN, "set_dreamview_member_brightness", {"index": 5, "level": 42}),
+            name="set_dreamview_member_brightness",
+        )
+    client.write_gatt_char.assert_not_awaited()
+    entity._async_supersede_preview.assert_not_awaited()
+
+
+@pytest.mark.parametrize("outcome", ["acknowledged", "rejected", "missing", "disconnect", "persist_failed"])
+async def test_original_group_ack_keeps_prior_and_pending_intents_without_replay(hass, profiles, monkeypatch, outcome):
+    c = coordinator(hass, "H9919")
+    c.profile = replace(
+        c.profile, dreamview_requires_upload_ack=True, outbound_transform=h6199_pact1_outbound_transform
+    )
+    client = ble_client()
+    c._client = client
+    await c._start_notify()
+    receive = client.start_notify.call_args.args[1]
+    c._ensure_connected = AsyncMock(return_value=client)
+    c._renew_foreground_lease = Mock()
+    monkeypatch.setattr(coordinator_module, "UPLOAD_ACK_TIMEOUT", 0.01)
+    prior = {"operation": "replace", "members": [member(cmd_ver=8).as_dict()]}
+    await c._dreamview_store.async_save(prior)
+    if outcome == "persist_failed":
+        save = c._dreamview_store.async_save
+        saves = 0
+
+        async def persist(data):
+            nonlocal saves
+            saves += 1
+            if saves == 2:
+                raise OSError("final persistence failed")
+            await save(data)
+
+        monkeypatch.setattr(c._dreamview_store, "async_save", persist)
+    packets = build_dreamview_group((member(),), c.profile)
+
+    async def transmit(_uuid, packet, **kwargs):
+        if outcome == "disconnect":
+            raise BleakError("ambiguous delivery")
+        if packet == packets[-1] and outcome != "missing":
+            receive(None, bytearray(frame("a35000" if outcome in {"acknowledged", "persist_failed"} else "a35001")))
+
+    client.write_gatt_char.side_effect = transmit
+    if outcome == "acknowledged":
+        await c.async_replace_dreamview_group((member(),))
+        assert c._dreamview_last_write == "acknowledged_unconfirmed"
+        assert c._dreamview_authored["members"] == [member().as_dict()]
+        assert c._dreamview_previous_authored == prior and c._dreamview_pending is None
+        status = await c.async_read_dreamview_state(timeout=0)
+        assert not status["membership_confirmed"] and status["slot_identities"] == "unknown"
+    else:
+        with pytest.raises(
+            BleakError
+            if outcome == "disconnect"
+            else TimeoutError
+            if outcome == "missing"
+            else OSError
+            if outcome == "persist_failed"
+            else RuntimeError
+        ):
+            await c.async_replace_dreamview_group((member(),))
+        assert client.write_gatt_char.await_count == (1 if outcome == "disconnect" else len(packets))
+        assert c._dreamview_authored == prior
+        assert c._dreamview_pending["members"] == [member().as_dict()]
+        c._dreamview_loaded = False
+        await c._async_load_dreamview()
+        assert c._dreamview_last_write == "unknown" and c._dreamview_authored == prior
+        assert c._dreamview_pending is not None
+    assert c._upload_ack is None and not c._dreamview_private_write
+    assert not c._field_revisions
+    await c.disconnect()
+
+
+def test_original_dreamview_group_reuses_only_evidenced_membership_layout(profiles):
+    members = (member(), member(address=None, name="lamp"))
+    assert build_dreamview_group(members, get_profile("H9919")) == build_dreamview_group(members, get_profile("H6099"))
+    for packet in build_dreamview_group(members, get_profile("H9919")):
+        assert h6199_pact1_outbound_transform(packet) == packet
+    with pytest.raises(ValueError, match="capacity"):
+        build_dreamview_group(tuple(member(address=f"00:00:00:00:00:{i:02x}") for i in range(6)), get_profile("H9919"))
+
+
+@pytest.mark.parametrize("operation", ["write", "read"])
+async def test_prepared_original_dreamview_rejects_revision_change(hass, profiles, operation):
+    c = coordinator(hass, "H9919")
+    original = c.profile
+    client = ble_client()
+    c._client = client
+    c._renew_foreground_lease = Mock()
+
+    async def connect():
+        c.profile = replace(original, dreamview_grammar="H6099")
+        return client
+
+    c._ensure_connected = AsyncMock(side_effect=connect)
+    with pytest.raises(ValueError, match="validated DreamView"):
+        if operation == "write":
+            await c.async_set_dreamview("member_brightness", {"index": 4, "level": 42})
+        else:
+            await c.async_read_dreamview_state(timeout=0)
+    client.write_gatt_char.assert_not_awaited()
 
 
 @pytest.mark.parametrize("model", ["H9901", "H9902"])
@@ -65,7 +248,7 @@ async def test_capacity_service_and_restricted_physical_writer(hass, profiles, m
     await service("replace_dreamview_group", {"members": members})
     packets = [call.args[1] for call in client.write_gatt_char.await_args_list]
     assert reassemble_a3(packets)[3] == capacity
-    assert (await c._dreamview_store.async_load())["members"] == members
+    assert (await c._dreamview_store.async_load())["authored"]["members"] == members
     await service("set_dreamview_member_brightness", {"index": capacity - 1, "level": 42})
     assert client.write_gatt_char.call_args.args[1] == frame(f"3360032a{capacity - 1:02x}")
     await service("set_dreamview_member_connect", {"index": capacity - 1, "connected": True})

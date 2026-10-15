@@ -178,6 +178,8 @@ def test_scene_activation_uses_name_only_when_raw_code_is_unavailable() -> None:
     )
     coordinator = SimpleNamespace(
         is_on=True,
+        model="H617A",
+        profile=get_profile("H617A"),
         scene_code=212,
         effect="forest",
         diy_code=None,
@@ -199,6 +201,7 @@ def test_scene_activation_rejects_ambiguous_code_with_a_different_label() -> Non
     coordinator = SimpleNamespace(
         is_on=True,
         model="H617E",
+        profile=get_profile("H617E"),
         scene_code=legacy.code,
         effect="racing game-a",
         diy_code=None,
@@ -331,14 +334,14 @@ async def test_partial_observation_does_not_confirm_or_repeat_activation(hass: H
     assert coordinator.send_command.await_args_list == [call(packet) for packet in compile_h617a(item, 800).packets]
 
 
-def _coordinator(*, readable: bool = True):
+def _coordinator(*, readable: bool = True, model: str = "H617A"):
     coordinator = SimpleNamespace(
         _control_lock=asyncio.Lock(),
         address="AA:BB:CC:DD:EE:FF",
-        model="H617A",
-        profile=get_profile("H617A")
+        model=model,
+        profile=get_profile(model)
         if readable
-        else replace(get_profile("H617A"), read_domains=frozenset(), setup_required_read_domains=frozenset()),
+        else replace(get_profile(model), read_domains=frozenset(), setup_required_read_domains=frozenset()),
         is_on=True,
         brightness_pct=72,
         rgb_color=(1, 2, 3),
@@ -620,8 +623,7 @@ async def test_h6199_layered_scene_uses_model_framing_and_identity_verification(
     hass: HomeAssistant,
 ) -> None:
     repository, cache = await _repositories(hass)
-    coordinator = _coordinator()
-    coordinator.model = "H6199"
+    coordinator = _coordinator(model="H6199")
     entry = next(scene for scene in SCENE_ENTRIES["H6199"] if scene.scene_type == 2 and scene.param)
     content = decode_catalogue_layered_scene("H6199", entry)
     assert content is not None
@@ -1887,8 +1889,7 @@ async def test_unreadable_device_is_uncertain_not_confirmed(
 
 async def test_h6199_is_rejected_before_any_write(hass: HomeAssistant) -> None:
     repository, cache = await _repositories(hass)
-    coordinator = _coordinator()
-    coordinator.model = "H6199"
+    coordinator = _coordinator(model="H6199")
 
     with pytest.raises(ValueError, match="not supported"):
         await EffectDeploymentEngine(repository, cache).async_apply_saved(
@@ -1905,8 +1906,7 @@ async def test_h6199_upload_without_selector_readback_stays_uncertain(
     hass: HomeAssistant,
 ) -> None:
     repository, cache = await _repositories(hass)
-    coordinator = _coordinator()
-    coordinator.model = "H6199"
+    coordinator = _coordinator(model="H6199")
     coordinator.unknown_scene_code = None
     item = _h6199_item()
     compiled = compile_h6199(item)
@@ -1933,8 +1933,7 @@ async def test_h6199_slot_readback_confirms_selection_without_claiming_content_r
     hass: HomeAssistant,
 ) -> None:
     repository, cache = await _repositories(hass)
-    coordinator = _coordinator()
-    coordinator.model = "H6199"
+    coordinator = _coordinator(model="H6199")
     coordinator.unknown_scene_code = None
 
     _confirm_scene_code_on_call(coordinator, 2, H6199_PALETTE_DIY_APPLY_CODE)
@@ -1961,8 +1960,7 @@ async def test_h6199_rejects_unsupported_variation_before_any_write(
     hass: HomeAssistant,
 ) -> None:
     repository, cache = await _repositories(hass)
-    coordinator = _coordinator()
-    coordinator.model = "H6199"
+    coordinator = _coordinator(model="H6199")
 
     with pytest.raises(ValueError, match="is not supported"):
         await EffectDeploymentEngine(repository, cache).async_apply_saved(
@@ -2000,8 +1998,7 @@ async def test_h6199_uncertain_result_emits_structured_evidence_gap(
     hass: HomeAssistant,
 ) -> None:
     backend = await EffectBackend.async_create(hass)
-    coordinator = _coordinator()
-    coordinator.model = "H6199"
+    coordinator = _coordinator(model="H6199")
     coordinator.unknown_scene_code = None
 
     result = await backend.engine.async_apply_saved(
@@ -2337,6 +2334,7 @@ async def test_h6199_video_profile_uses_native_writers_in_profile_order(
         call.active_video_mode(
             coordinator,
             mode="movie",
+            parameters=None,
             requested_values={
                 "full_screen": False,
                 "saturation": 63,

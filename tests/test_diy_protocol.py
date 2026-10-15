@@ -8,7 +8,7 @@ from kaitaistruct import KaitaiStream
 
 from custom_components.ha_govee_led_ble import effect_commands as proto
 from custom_components.ha_govee_led_ble import effect_contracts
-from custom_components.ha_govee_led_ble.const import MODEL_PROFILES, ModelProfile
+from custom_components.ha_govee_led_ble.const import MODEL_PROFILES, ModelProfile, SupportQuality
 from custom_components.ha_govee_led_ble.effect_catalogue import (
     H617A_TYPE04_APPLY_CODE,
     H6199_DIY_EFFECTS,
@@ -24,6 +24,7 @@ from custom_components.ha_govee_led_ble.effect_compiler import (
     compile_h617a,
     compile_h6199,
     resolve_diy_code,
+    validate_compiled_geometry,
 )
 from custom_components.ha_govee_led_ble.effect_contracts import (
     ApplicationRoute,
@@ -39,6 +40,7 @@ from custom_components.ha_govee_led_ble.effect_domain import (
     PaintedEffect,
     PaletteDiyEffect,
     SingleEffect,
+    WorkshopEffect,
     effect_content_from_dict,
     effect_content_to_dict,
 )
@@ -51,14 +53,150 @@ from custom_components.ha_govee_led_ble.generated_protocol.diy_type03 import Diy
 from custom_components.ha_govee_led_ble.generated_protocol.diy_type04 import DiyType04
 from custom_components.ha_govee_led_ble.generated_protocol.h6199_effect_upload import H6199EffectUpload
 from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
+    H6199Pact1EffectUpload,
     build_h6199_palette_diy_envelope,
+    h6199_pact1_outbound_transform,
+    h6199_pact1_studio_kind,
     parse_a3_effect_envelope,
     parse_command,
 )
 from custom_components.ha_govee_led_ble.layered_scene_decoder import decode_workshop_effect, encode_workshop_effect
-from custom_components.ha_govee_led_ble.transport import fragment_a3, reassemble_a3
+from custom_components.ha_govee_led_ble.transport import fragment_a3, reassemble_a1_02, reassemble_a3
 
 H = bytes.fromhex
+
+
+@pytest.fixture
+def legacy_h6199_profile():
+    return ModelProfile(
+        "Synthetic legacy H6199 effects",
+        support_quality=SupportQuality.EXPERIMENTAL,
+        command_grammar="H6199",
+        effect_grammar="H6199-Pact1",
+        status_grammar="H6199-Pact1",
+        outbound_transform=h6199_pact1_outbound_transform,
+        brightness_wire_range=(20, 254),
+        a1_diy_selector=254,
+        diy_requires_upload_ack=True,
+        supports_custom_effects=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "family,variation",
+    [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (1, 0),
+        (1, 2),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+        (3, 3),
+        (3, 4),
+        (3, 5),
+        (8, 9),
+        (8, 10),
+        (9, 9),
+        (9, 10),
+        (10, 0),
+        (4, 8),
+        (4, 6),
+        (4, 7),
+    ],
+)
+def test_legacy_h6199_source_variations_compile_via_a1_and_diy_selector(legacy_h6199_profile, family, variation):
+    content = SingleEffect(family, variation, 50, ((18, 52, 86),))
+    item = LibraryItem.new("Legacy", content)
+    compiled = compile_application(item, "H6199", profile=legacy_h6199_profile)
+    expected_body = bytes((254, family, variation, 50, 3, 18, 52, 86, 0)).ljust(16, b"\0")
+    assert reassemble_a1_02(compiled.upload_packets) == expected_body
+    assert compiled.upload_transport == "a1_02" and compiled.diy_code == 254
+    assert compiled.evidence_codes == ("native_diy_positive_ack_required",)
+    assert compiled.activation_packet == H("33050afe000000000000000000000000000000c2")
+    assert decode_effect_frames(compiled.upload_packets, "H6199", "a1_02", profile=legacy_h6199_profile) == content
+
+
+def test_legacy_h6199_mixed_bounds_and_catalogue_are_revision_scoped(legacy_h6199_profile):
+    content = MultiEffect((EffectPair(0, 1), EffectPair(9, 10)), 0, ((1, 2, 3),))
+    compiled = compile_application(LibraryItem.new("Mixed", content), "H6199", profile=legacy_h6199_profile)
+    assert reassemble_a1_02(compiled.upload_packets) == H("feff000003010203040001090a000000")
+    assert decode_effect_frames(compiled.upload_packets, "H6199", "a1_02", profile=legacy_h6199_profile) == content
+    catalogue = MODEL_EFFECT_CATALOGUES["H6199"]
+    legacy = catalogue.to_dict(profile=legacy_h6199_profile)
+    assert legacy["sku"] == "H6199" and len(legacy["effects"]) == 8
+    assert sum(len(family["variations"]) for family in legacy["effects"]) == 19
+    assert legacy["apply"]["single"] == legacy["apply"]["multi"] == "supported"
+    assert legacy["apply"]["palette_diy"] == "unsupported"
+    assert catalogue.to_dict()["apply"]["single"] == "unsupported"
+
+
+def test_legacy_upload_cannot_cross_effect_profile_transition(legacy_h6199_profile):
+    compiled = compile_application(
+        LibraryItem.new("Legacy", SingleEffect(0, 0, 50, ((1, 2, 3),))),
+        "H6199",
+        profile=legacy_h6199_profile,
+    )
+    with pytest.raises(ValueError, match="profile changed since compilation"):
+        validate_compiled_geometry(compiled, MODEL_PROFILES["H6199"])
+    validate_compiled_geometry(compiled, replace(legacy_h6199_profile, physical_ic_count=60))
+
+
+@pytest.mark.parametrize("extended,kind,selector", [(False, 2, 402), (True, 10, 403)])
+def test_legacy_studio_retains_extended_source_and_uses_its_actual_route(
+    legacy_h6199_profile,
+    extended,
+    kind,
+    selector,
+):
+    profile = replace(legacy_h6199_profile, supports_advanced_effects=True)
+    effect = WORKSHOP_PROTOCOL_FIXTURES[0].content("H6199").effect
+    if extended:
+        effect = replace(effect, layers=tuple(replace(layer, excess=H("1102223344")) for layer in effect.layers))
+    payload = encode_workshop_effect("H6199", effect, profile=profile, extended=extended)
+    source = (b"\x02" if extended else b"") + payload
+    assert int(h6199_pact1_studio_kind(source)) == kind
+    decoded, padding = decode_workshop_effect("H6199", source, profile=profile)
+    assert decoded == effect and padding == 0
+    content = WorkshopEffect("H6199", "software", effect, source)
+    assert effect_content_from_dict(effect_content_to_dict(content)) == content
+    compiled = compile_application(LibraryItem.new("Studio", content), "H6199", profile=profile)
+    envelope = reassemble_a3(compiled.upload_packets)
+    parsed = parse_a3_effect_envelope(envelope, "H6199", profile=profile)
+    assert isinstance(parsed, H6199Pact1EffectUpload)
+    assert int(parsed.kind) == kind and compiled.diy_code == selector
+    assert parsed.studio_selector == selector and compiled.selector_kind == "scene"
+    assert parsed._raw_content[: len(payload)] == payload
+    assert compiled.activation_packet[:5] == bytes((0x33, 5, 4, selector & 255, selector >> 8))
+    assert "native_diy_positive_ack_required" in compiled.evidence_codes
+    assert decode_effect_frames(compiled.upload_packets, "H6199", "a3", profile=profile) == effect
+
+
+def test_legacy_studio_rejects_trailing_unknown_data_instead_of_reclassifying(legacy_h6199_profile):
+    profile = replace(legacy_h6199_profile, supports_advanced_effects=True)
+    effect = WORKSHOP_PROTOCOL_FIXTURES[0].content("H6199").effect
+    payload = encode_workshop_effect("H6199", effect, profile=profile)
+    with pytest.raises(ValueError, match="unrepresentable trailing"):
+        h6199_pact1_studio_kind(payload + b"\x01")
+    invalid = replace(effect, layers=(replace(effect.layers[0], excess=H("110422")), *effect.layers[1:]))
+    with pytest.raises(ValueError, match="Invalid H6199 Pact 1 layer payload"):
+        encode_workshop_effect("H6199", invalid, profile=profile, extended=True)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        SingleEffect(0, 0, 0, ((1, 2, 3),)),
+        SingleEffect(10, 0, 50, ((1, 2, 3),) * 4),
+        SingleEffect(4, 8, 42, ((1, 2, 3),)),
+        MultiEffect((EffectPair(4, 8),), 50, ((1, 2, 3),)),
+        PaletteDiyEffect("H6199", 0, 0, 50, ((1, 2, 3),)),
+    ],
+)
+def test_legacy_h6199_rejects_unsupported_authoring_and_modern_upload_route(legacy_h6199_profile, content):
+    with pytest.raises(ValueError):
+        compile_application(LibraryItem.new("Invalid", content), "H6199", profile=legacy_h6199_profile)
 
 
 PAINTED_CONTENT = PaintedEffect(
@@ -501,7 +639,7 @@ def test_basic_grammars_do_not_supply_effect_grammar(monkeypatch, model) -> None
 
 
 @pytest.mark.parametrize("field", ["effect_grammar", "command_grammar"])
-@pytest.mark.parametrize("grammar", [None, "unknown", "other"])
+@pytest.mark.parametrize("grammar", [None, "unknown"])
 @pytest.mark.parametrize(
     ("model", "content"),
     [
@@ -515,13 +653,15 @@ def test_basic_grammars_do_not_supply_effect_grammar(monkeypatch, model) -> None
 )
 def test_custom_authorization_without_supported_grammar_pair_is_rejected(monkeypatch, model, content, field, grammar):
     item = LibraryItem.new("Custom", content)
-    if grammar == "other":
-        grammar = "H6199" if model == "H617A" else "H617A"
     monkeypatch.setitem(
         MODEL_PROFILES,
         model,
         replace(
-            MODEL_PROFILES[model], **{field: grammar}, read_domains=frozenset(), setup_required_read_domains=frozenset()
+            MODEL_PROFILES[model],
+            **{field: grammar},
+            read_domains=frozenset(),
+            setup_required_read_domains=frozenset(),
+            h6199_controls=frozenset(),
         ),
     )
     assert compatibility(item, model).state is CompatibilityState.INCOMPATIBLE

@@ -392,7 +392,10 @@ async def test_initial_state_and_update(coord, h6199):
     assert coord.color_mode is None
     assert coord.profile == MODEL_PROFILES["H617A"] and coord.profile.state_readable
     assert coord.profile.supports_music_mode and not coord.profile.supports_video_mode
-    assert h6199.profile == MODEL_PROFILES["H6199"] and h6199.profile.state_readable
+    assert h6199.profile == replace(
+        MODEL_PROFILES["H6199"], supports_multi_layered_effects=False, supports_video_inline_brightness=False
+    )
+    assert h6199.profile.state_readable
     assert h6199.profile.supports_video_mode and not h6199.profile.supports_white_brightness
     coord.is_on, coord.brightness_pct, coord.rgb_color = True, 75, (255, 0, 128)
     exp = {
@@ -420,6 +423,7 @@ def test_capture_effect_control_state(coord):
 
     assert state == PriorControlState(
         mode="colour",
+        effect_grammar="H617A",
         music_model="H617A",
         music_parameters={},
         is_on=True,
@@ -646,6 +650,7 @@ async def test_restore_effect_control_state_reapplies_complete_video_profile(h61
     video_mode.assert_awaited_once_with(
         h6199,
         parameters=None,
+        preserve_parameters=True,
         mode="game",
         requested_values={"full_screen": False, "saturation": 63, "sound_effects": True, "sound_effects_softness": 27},
     )
@@ -963,6 +968,34 @@ async def test_outbound_transform_rejection_does_not_write_or_arm_state(coord, r
     client.write_gatt_char.assert_not_awaited()
     assert coord.packet_log == []
     assert coord._expected_state == previous_expectations
+
+
+@pytest.mark.parametrize("transform", [None, _transform_packet])
+@pytest.mark.parametrize("change", ["profile", "generation"])
+async def test_write_guard_profile_change_rejects_stale_wire_before_state(coord, transform, change):
+    coord.profile = replace(coord.profile, outbound_transform=transform)
+    packet = build_power(True)
+    client = _c(write_gatt_char=AsyncMock())
+    before = coord.capture_effect_control_state()
+    coord._arm_expected_values({"is_on": False})
+    expectations = dict(coord._expected_state)
+
+    def guard():
+        if change == "profile":
+            coord.profile = replace(coord.profile, outbound_transform=None)
+        else:
+            coord._profile_generation += 1
+
+    with pytest.raises(ValueError, match="Device profile changed before control write"):
+        await coord._async_write_packet(
+            client, packet, arm_expected=True, before_write=guard, state_values={"brightness_pct": 50}
+        )
+
+    client.write_gatt_char.assert_not_awaited()
+    assert coord.capture_effect_control_state() == before
+    assert coord._expected_state == expectations
+    assert coord.control_write_attempts == 0
+    assert coord.packet_log == []
 
 
 @pytest.mark.parametrize("transform", [None, _transform_packet])
@@ -1437,7 +1470,7 @@ def test_notify_callback(h6199):
     assert h6199.is_on is False
     cb(None, bytearray(proto.build_packet(0xAA, 0x04, [0x4B])))
     assert h6199.brightness_pct == 75
-    cb(None, bytearray(proto.build_packet(0xAA, 0x05, [0x00, 0x00, 0x01, 42])))
+    cb(None, bytearray(proto.build_packet(0xAA, 0x05, [0x00, 0x00, 0x01, 42, 0, 50])))
     assert (h6199.video_mode, h6199.video_full_screen, h6199.video_saturation) == ("game", False, 42)
     cb(None, bytearray(proto.build_packet(0xAA, 0x05, [0x13, 0x04, 66, 0x00, 0x01, 1, 2, 3])))
     assert (h6199.music_mode, h6199.music_sensitivity, h6199.music_calm, h6199.music_color) == (
@@ -2142,6 +2175,7 @@ def test_video_grammar_owns_writers_and_ack_independently_of_basic_grammars(
         replace(
             MODEL_PROFILES["H6199"],
             name="Synthetic video device",
+            h6199_controls=frozenset(),
             command_grammar="H617A",
             status_grammar=None,
             read_domains=frozenset(),
@@ -2163,6 +2197,7 @@ def test_video_grammar_owns_writers_and_ack_independently_of_basic_grammars(
             MODEL_PROFILES["H6199"],
             command_grammar=None,
             status_grammar="unknown",
+            h6199_controls=frozenset(),
             read_domains=frozenset(),
             setup_required_read_domains=frozenset(),
         ),
@@ -2331,7 +2366,7 @@ def test_readback_mode_mutual_exclusion(h6199):
     h6199.effect_families = frozenset({"scenes", "music", "video"})
     cb = h6199._notify_callback
     music = bytearray(proto.build_packet(0xAA, 0x05, [0x13, 0x04, 66, 0x00, 0x01, 1, 2, 3]))
-    video = bytearray(proto.build_packet(0xAA, 0x05, [0x00, 0x00, 0x01, 42]))
+    video = bytearray(proto.build_packet(0xAA, 0x05, [0x00, 0x00, 0x01, 42, 0, 50]))
     scene = bytearray(proto.build_packet(0xAA, 0x05, [0x04, 0x09, 0x00]))
 
     h6199.video_mode, h6199.effect = "game", "candlelight"

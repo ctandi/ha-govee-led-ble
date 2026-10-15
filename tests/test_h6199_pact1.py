@@ -1,220 +1,244 @@
-"""Positive Pact 1 evidence narrows H6199; hardware versions never choose Pact."""
+"""Source-driven Pact 1 candidate; synthetic radio results are not hardware qualification."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.components.light import ColorMode
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.ha_govee_led_ble import coordinator as coordinator_module
 from custom_components.ha_govee_led_ble.const import (
-    DOMAIN,
-    H6199_PACT1_PROFILE,
     MODEL_PROFILES,
+    ReadDomain,
+    SupportQuality,
     device_profile,
 )
 from custom_components.ha_govee_led_ble.control_arbiter import ControlIntent
 from custom_components.ha_govee_led_ble.coordinator import GoveeBLECoordinator
-from custom_components.ha_govee_led_ble.effect_catalogue import MODEL_EFFECT_CATALOGUES, resolve_catalogue_template
-from custom_components.ha_govee_led_ble.effect_compiler import compatibility, compile_application
+from custom_components.ha_govee_led_ble.coordinator_status import ParsedMode
+from custom_components.ha_govee_led_ble.effect_catalogue import MODEL_EFFECT_CATALOGUES
+from custom_components.ha_govee_led_ble.effect_compiler import compile_application
 from custom_components.ha_govee_led_ble.effect_contracts import device_effect_capabilities
 from custom_components.ha_govee_led_ble.effect_deployments import PriorControlState
-from custom_components.ha_govee_led_ble.effect_domain import LibraryItem
-from custom_components.ha_govee_led_ble.effect_storage import LibrarySnapshot
-from custom_components.ha_govee_led_ble.effect_websocket import ws_editor_devices, ws_scene_catalogue_list
+from custom_components.ha_govee_led_ble.effect_domain import LibraryItem, SingleEffect
 from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
     build_brightness,
     build_brightness_query,
     build_colour_mode_query,
     build_firmware_query,
-    build_h6199_control,
+    build_h6199_control_query,
     build_hardware_query,
-    build_power,
     build_power_query,
-    build_segment_query,
     build_subordinate_query,
-    build_video_mode,
     build_white_balance,
-    require_profile_packet,
 )
 from custom_components.ha_govee_led_ble.light import GoveeBLELight
-from custom_components.ha_govee_led_ble.light_commands import build_color_rgb
+from custom_components.ha_govee_led_ble.transport import ENCRYPTION_UUID
+from custom_components.ha_govee_led_ble.video_applicability import video_control_states
+from tests.test_govee_encryption import client as encryption_client
 from tests.test_h6199_capabilities import lifecycle as pact_lifecycle  # noqa: F401
 from tests.test_h6199_native_controls import frame
+
+FIRMWARE, HARDWARE = "1.07.02", "1.00.01"
 
 
 def advertise(c, pact):
     c._note_advertisement(SimpleNamespace(manufacturer_data={34818: bytes((0xEC, 0, pact, 1, 0))}))
 
 
+def legacy_replies(replies, *, colours=None, brightness=136, camera=0):
+    colours = [(255, 255, 255)] * 15 if colours is None else colours
+    replies.update(
+        {
+            build_hardware_query("H6199"): frame("aa0703" + HARDWARE.encode().hex()),
+            build_firmware_query("H6199"): frame("aa06" + FIRMWARE.encode().hex()),
+            build_subordinate_query(0x20, "H6199"): frame("aa20" + b"1.00.01".hex()),
+            build_subordinate_query(0x21, "H6199"): frame("aa21" + b"1.00.28".hex()),
+            build_power_query("H6199"): frame("aa0101"),
+            build_brightness_query("H6199"): frame(f"aa04{brightness:02x}"),
+            build_colour_mode_query("H6199", selector=1): frame("aa050b00"),
+            build_h6199_control_query("camera_status"): frame(f"aa32{camera:02x}"),
+        }
+    )
+    for group in range(1, 5):
+        records = colours[(group - 1) * 4 : group * 4]
+        replies[frame(f"aaa2{group:02x}")] = frame(
+            f"aaa2{group:02x}" + bytes(channel for colour in records for channel in colour).hex()
+        )
+
+
+@pytest.fixture
+async def legacy_lifecycle(pact_lifecycle, monkeypatch):  # noqa: F811
+    c, replies, clients, packets = pact_lifecycle
+    advertise(c, 1)
+    legacy_replies(replies)
+    connect = coordinator_module.async_establish_ble_connection
+
+    async def zero_marker_radio(*args, **kwargs):
+        client = await connect(*args, **kwargs)
+        marker = encryption_client(b"\0")
+        client.services, client.read_gatt_char = marker.services, marker.read_gatt_char
+        return client
+
+    monkeypatch.setattr(coordinator_module, "async_establish_ble_connection", zero_marker_radio)
+    yield c, replies, clients, packets
+
+
 @pytest.mark.parametrize("model", ["H6199", "H6099", "H617A"])
-def test_only_exact_model_and_positive_pact_select_restriction(model):
-    assert device_profile(model, None, None) is MODEL_PROFILES[model]
-    assert device_profile(model, 2, 1) is MODEL_PROFILES[model]
-    assert device_profile(model, 1, 1) is (H6199_PACT1_PROFILE if model == "H6199" else MODEL_PROFILES[model])
+def test_exact_model_and_positive_pact_choose_legacy_not_hardware_alone(model):
+    unknown = device_profile(model, None, None, firmware=FIRMWARE, hardware=HARDWARE)
+    modern = device_profile(model, 2, 1)
+    legacy = device_profile(model, 1, 1, firmware=FIRMWARE, hardware=HARDWARE)
+    if model != "H6199":
+        assert unknown is modern is legacy is MODEL_PROFILES[model]
+        return
+    assert unknown.status_grammar == modern.status_grammar == "H6199"
+    assert not unknown.supports_multi_layered_effects and not unknown.supports_video_inline_brightness
+    assert legacy.support_quality is SupportQuality.EXPERIMENTAL
+    assert legacy.status_grammar == legacy.effect_grammar == legacy.video_grammar == "H6199-Pact1"
+    assert legacy.command_grammar == "H6199" and legacy.brightness_wire_range == (20, 254)
+    assert legacy.outbound_transform(build_brightness(50, model)) == frame("330488")
+
+
+def test_candidate_contract_has_complete_routes_and_no_newer_register_permissions():
+    profile = device_profile("H6199", 1, 1, firmware=FIRMWARE, hardware=HARDWARE)
+    assert profile.supports_rgb and profile.supports_color_temperature and profile.supports_scenes
+    assert (profile.min_color_temp_kelvin, profile.max_color_temp_kelvin) == (2000, 9000)
+    assert profile.segment_count == 15 and profile.segment_group_size == 4
+    assert profile.supports_segment_writes and not profile.supports_segment_brightness
+    assert (
+        not profile.supports_white_balance
+        and not profile.supports_relative_brightness
+        and not profile.supports_blank_screen
+    )
+    assert not profile.can_read(ReadDomain.DISPLAY_SETTING) and not profile.can_read(ReadDomain.RELATIVE_BRIGHTNESS)
+    assert profile.diy_requires_upload_ack and profile.scene_requires_upload_ack
+    assert profile.dreamview_requires_upload_ack and profile.dreamview_max_sub_devices == 5
+    assert len(profile.dreamview_operations) == 9 and len(profile.dreamview_reads) == 7
+    metadata = MODEL_EFFECT_CATALOGUES["H6199"].to_dict(profile=profile)
+    assert len(metadata["effects"]) == 8 and sum(len(f["variations"]) for f in metadata["effects"]) == 19
+    assert "inline_brightness" in metadata["video_settings"]
+    capabilities = device_effect_capabilities("entry", "H6199", "Legacy", 15, profile=profile).to_dict()
+    assert capabilities["support_quality"] == "experimental"
+    assert capabilities["custom_effects"]["single"] == capabilities["custom_effects"]["multi"] == "supported"
+    assert "multi_layered" in capabilities["effect_categories"]
 
 
 @pytest.mark.parametrize(
-    "builder",
-    [
-        lambda: build_power(True, "H6199"),
-        lambda: build_power(False, "H6199"),
-        lambda: build_power_query("H6199"),
-        lambda: build_firmware_query("H6199"),
-        lambda: build_hardware_query("H6199"),
-    ],
+    "firmware,hardware,scenes",
+    [(None, None, False), ("1.06.00", HARDWARE, False), ("1.06.01", HARDWARE, True), (FIRMWARE, HARDWARE, True)],
 )
-def test_generated_guard_permits_power_and_main_identity(builder):
-    require_profile_packet(builder(), H6199_PACT1_PROFILE)
+def test_source_main_identity_gates_service_scenes_not_basic_controls(firmware, hardware, scenes):
+    profile = device_profile("H6199", 1, 1, firmware=firmware, hardware=hardware)
+    assert profile.supports_scenes is scenes
+    assert profile.supports_rgb and profile.supports_music_mode and profile.supports_custom_effects
 
 
-@pytest.mark.parametrize(
-    "packet",
-    [
-        build_brightness(50, "H6199"),
-        build_brightness_query("H6199"),
-        build_colour_mode_query("H6199"),
-        build_color_rgb(1, 2, 3, "H6199"),
-        build_video_mode("movie", True, 50, False, 50, "H6199"),
-        build_h6199_control("gradient", 1),
-        build_white_balance(21, 5, "H6199"),
-        build_segment_query(1, "H6199"),
-        build_subordinate_query(0x20, "H6199"),
-        b"invalid upload",
-    ],
-)
-async def test_physical_boundary_rejects_before_optimism(hass, monkeypatch, packet):
+async def test_real_legacy_setup_uses_zero_marker_register_brightness_and_rgb_only_pages(legacy_lifecycle):
+    c, replies, clients, packets = legacy_lifecycle
+    await c._async_update_data()
+    assert c.available and c.is_on and c.color_mode is ParsedMode.COLOUR
+    assert c.profile.supports_scenes and c.profile.support_quality is SupportQuality.EXPERIMENTAL
+    assert (c.fw_version, c.hw_version) == (FIRMWARE, HARDWARE)
+    assert c.brightness_pct == 50 and c.segment_colors == [(255, 255, 255)] * 15
+    assert c.segment_state_source == "observed" and c.segment_brightness_source == "initial"
+    assert not c._field_revisions.get("segment_brightness", 0)
+    assert c._encryption.last_result == "plaintext" and c._encryption.marker_length == 1
+    clients[0].read_gatt_char.assert_awaited_once_with(ENCRYPTION_UUID)
+    assert all(frame(f"aaa2{group:02x}") in packets for group in range(1, 5))
+    assert frame("aa0501") in packets and frame("aa05") not in packets
+    assert not any(packet[:2] in (b"\xaa\xa5", b"\xaa\xa9", b"\xaa\xae", b"\xaa\x14") for packet in packets)
+    light = GoveeBLELight(c)
+    assert light.supported_color_modes == {ColorMode.RGB, ColorMode.COLOR_TEMP}
+    assert "segment_brightness" not in light.extra_state_attributes
+    state = c.capture_effect_control_state()
+    assert PriorControlState.from_dict(state.to_dict()) == state
+    assert state.segment_colors is not None and state.segment_brightness is None
+
+
+async def test_real_legacy_brightness_and_partial_rgb_have_fresh_readback(legacy_lifecycle):
+    c, replies, clients, packets = legacy_lifecycle
+    await c._async_update_data()
+    await c.send_command(build_brightness(50, c.model, profile=c.profile))
+    assert packets[-1] == frame("330488")
+    assert await c.refresh_state(expected_brightness=50)
+    colours = [(255, 255, 255)] * 15
+    colours[0] = colours[14] = (18, 52, 86)
+    legacy_replies(replies, colours=colours)
+    await c.async_paint_segments([([1, 15], (18, 52, 86))])
+    assert frame("33050b12345600000140") in packets
+    assert c.segment_colors == colours and c.segment_state_source == "observed"
+    assert c.segment_brightness_source == "initial"
+    assert not c._field_revisions.get("segment_brightness", 0)
+
+
+@pytest.mark.parametrize("identity_returns", [True, False])
+async def test_legacy_reconnect_requires_fresh_identity_without_requiring_camera(legacy_lifecycle, identity_returns):
+    c, replies, clients, packets = legacy_lifecycle
+    await c._async_update_data()
+    assert c.profile.supports_scenes
+    assert video_control_states(c.profile, c)["inline_brightness"].value == "supported"
+    del replies[build_h6199_control_query("camera_status")]
+    if not identity_returns:
+        del replies[build_firmware_query("H6199")]
+    await c._async_update_data()
+    assert c.available and len(clients) == 2
+    assert c.camera_status == "unknown"
+    assert c.profile.supports_rgb and c.profile.supports_custom_effects
+    assert c.profile.supports_scenes is identity_returns
+    assert video_control_states(c.profile, c)["inline_brightness"].value == (
+        "supported" if identity_returns else "evidence_gap"
+    )
+
+
+async def test_newer_register_is_rejected_before_state_or_write(hass, monkeypatch):
     c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
     advertise(c, 1)
     client = MagicMock(is_connected=True, write_gatt_char=AsyncMock())
     c._client = client
     monkeypatch.setattr(c, "_ensure_connected", AsyncMock(return_value=client))
     before = c.capture_effect_control_state()
-    with pytest.raises(ValueError, match="does not support this operation"):
-        await c.async_write_effect_sequence((packet,), intent=ControlIntent.USER, state_values={"brightness_pct": 254})
-    assert c.capture_effect_control_state() == before
-    assert c.control_write_attempts == 0 and not c._expected_state
-    client.write_gatt_char.assert_not_awaited()
-
-
-async def test_known_pact1_real_setup_and_power(pact_lifecycle):  # noqa: F811
-    c, replies, clients, packets = pact_lifecycle
-    advertise(c, 1)
-    replies[build_hardware_query(c.model)] = frame("aa0703" + b"1.00.01".hex())
-    replies[build_firmware_query(c.model)] = frame("aa06" + b"1.07.02".hex())
-    await c._async_update_data()
-    assert c.available and c.is_on
-    assert c.profile is H6199_PACT1_PROFILE
-    assert set(packets) == {build_power_query(c.model), build_hardware_query(c.model), build_firmware_query(c.model)}
-    # Main identity replies may arrive just after the power reply; neither is mandatory.
-    assert c.hw_version == "1.00.01" and c.fw_version == "1.07.02"
-    light = GoveeBLELight(c)
-    assert light.supported_color_modes == {ColorMode.ONOFF} and light.brightness is None
-    before = c.capture_effect_control_state()
-    for reply in ("aa04fe", "aa0513046400012060a0", "aaa90006011003001505", "aaae0104141e2832"):
-        c._notify_callback(None, bytearray(frame(reply)))
-    assert c.capture_effect_control_state() == before
-    assert PriorControlState.from_dict(before.to_dict()) == before
-    await c.send_command(build_power(False, c.model))
-    assert packets[-1] == build_power(False, c.model)
-
-
-async def test_late_pact_changes_capabilities_without_destroying_library(hass, monkeypatch):
-    c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
-    c.hw_version, c.fw_version = "1.00.01", "1.07.02"
-    assert c.profile is MODEL_PROFILES[c.model]
-    light = GoveeBLELight(c)
-    items = tuple(LibraryItem.new(t.label, t.content) for t in MODEL_EFFECT_CATALOGUES[c.model].templates)
-    light._library_snapshot = LibrarySnapshot(items)
-    before = [item.to_dict() for item in items]
-    c.brightness_pct = 254
-    advertise(c, 1)
-    assert c.brightness_pct == 100 and light.brightness is None and light.color_mode is ColorMode.ONOFF
-    assert light.effect_list == [] and light._selector_entries() == ()
-    assert not light.supported_features
-    for item in items:
-        assert compatibility(item, c.model, profile=c.profile).state == "incompatible"
-        with pytest.raises(ValueError):
-            compile_application(item, c.model, profile=c.profile)
-    for template in MODEL_EFFECT_CATALOGUES[c.model].templates:
-        with pytest.raises(ValueError, match="no effect templates"):
-            resolve_catalogue_template(c.model, template.id, profile=c.profile)
-    catalogue = MODEL_EFFECT_CATALOGUES[c.model].to_dict(profile=c.profile)
-    assert catalogue["templates"] == catalogue["workflows"] == catalogue["music_modes"] == []
-    capabilities = device_effect_capabilities("entry", c.model, "Test", 0, profile=c.profile).to_dict()
-    assert capabilities["effect_categories"] == []
-    assert set(capabilities["custom_effects"].values()) == {"unsupported"}
-    assert set(capabilities["profiles"].values()) == {"unsupported"}
-    c._note_advertisement(SimpleNamespace(manufacturer_data={}))
-    assert c.profile is H6199_PACT1_PROFILE
-    client = MagicMock(is_connected=True, write_gatt_char=AsyncMock())
-    c._client = client
-    with pytest.raises(HomeAssistantError):
-        await light._async_turn_on(brightness=200)
-    client.write_gatt_char.assert_not_awaited()
-    advertise(c, 2)
-    assert c.profile is MODEL_PROFILES[c.model]
-    assert ColorMode.RGB in light.supported_color_modes and light.color_mode is ColorMode.RGB
-    assert len(c.segment_colors) == 15 and c.segment_state_source == "initial"
-    assert light.effect_list
-    assert [item.to_dict() for item in items] == before
-
-
-async def test_editor_excludes_restricted_device(hass, monkeypatch):
-    c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
-    advertise(c, 1)
-    entry = SimpleNamespace(runtime_data=c, state=ConfigEntryState.LOADED, domain=DOMAIN, entry_id="entry")
-    monkeypatch.setattr(hass.config_entries, "async_entries", lambda _=None: [entry] if _ == DOMAIN else [])
-    monkeypatch.setattr(hass.config_entries, "async_get_entry", lambda _: entry)
-    monkeypatch.setattr("custom_components.ha_govee_led_ble.effect_websocket._backend", lambda _: MagicMock())
-    connection = MagicMock()
-    await ws_editor_devices.__wrapped__(hass, connection, {"id": 1})
-    connection.send_result.assert_called_once_with(1, {"devices": []})
-    ws_scene_catalogue_list(hass, connection, {"id": 2, "config_entry_id": "entry"})
-    connection.send_error.assert_called_once_with(2, "unsupported_model", "Device profile supports no scenes")
-
-
-@pytest.mark.parametrize("change_at", ["connect", "guard"])
-async def test_late_pact_identification_blocks_prepared_write(hass, monkeypatch, change_at):
-    c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
-    packet = build_brightness(50, c.model)
-    client = MagicMock(is_connected=True, write_gatt_char=AsyncMock())
-    c._client = client
-
-    async def connect():
-        if change_at == "connect":
-            advertise(c, 1)
-        return client
-
-    def guard():
-        if change_at == "guard":
-            advertise(c, 1)
-
-    monkeypatch.setattr(c, "_ensure_connected", connect)
-    with pytest.raises(ValueError, match="does not support this operation"):
+    with pytest.raises(ValueError):
         await c.async_write_effect_sequence(
-            (packet,), intent=ControlIntent.USER, write_guard=guard, state_values={"brightness_pct": 254}
+            (build_white_balance(21, 5, c.model),), intent=ControlIntent.USER, state_values={"brightness_pct": 50}
         )
-    assert c.brightness_pct == 100 and c.control_write_attempts == 0
+    assert c.capture_effect_control_state() == before and c.control_write_attempts == 0
     client.write_gatt_char.assert_not_awaited()
 
 
-async def test_late_pact_does_not_rollback_invalid_state(hass, monkeypatch):
+async def test_late_revision_keeps_library_and_rejects_prepared_modern_upload(hass, monkeypatch):
     c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
-    c.brightness_pct = 254
-    c.is_on = True
-    light = GoveeBLELight(c)
-    client = MagicMock(is_connected=True, write_gatt_char=AsyncMock())
-    c._client = client
+    item = LibraryItem.new("Legacy recipe", SingleEffect(0, 0, 50, ((1, 2, 3),)))
+    before = item.to_dict()
+    advertise(c, 1)
+    compiled = compile_application(item, c.model, profile=c.profile)
+    assert compiled.upload_transport == "a1_02" and item.to_dict() == before
+    c._note_advertisement(SimpleNamespace(manufacturer_data={}))
+    assert c.profile.status_grammar == "H6199-Pact1"
+    advertise(c, 2)
+    from custom_components.ha_govee_led_ble.effect_compiler import validate_compiled_geometry
 
-    async def connect():
-        advertise(c, 1)
-        return client
+    with pytest.raises(ValueError, match="profile changed"):
+        validate_compiled_geometry(compiled, c.profile)
+    assert item.to_dict() == before
+    assert c.profile.status_grammar == "H6199"
 
-    monkeypatch.setattr(c, "_ensure_connected", connect)
-    with pytest.raises(HomeAssistantError):
-        await light._async_turn_on(brightness=200)
-    assert c.brightness_pct == 100
-    assert PriorControlState.from_dict(c.capture_effect_control_state().to_dict()).brightness_pct == 100
-    client.write_gatt_char.assert_not_awaited()
+
+async def test_legacy_unknown_mode_and_music_flags_never_install_observations(hass):
+    c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
+    advertise(c, 1)
+    before = c.capture_effect_control_state()
+    for payload in ("aa051304320001123456", "aa050c033202"):
+        c._notify_callback(None, bytearray(frame(payload)))
+    assert c.capture_effect_control_state() == before
+    assert not c._field_revisions
+    assert all(packet["outcome"] == "rejected" for packet in c.packet_log)
+
+
+def test_inline_brightness_needs_fresh_main_and_subordinate_identity():
+    profile = device_profile("H6199", 1, 1, firmware=FIRMWARE, hardware=HARDWARE)
+    identity = SimpleNamespace(pact_type=1, pact_code=1, fw_version=FIRMWARE, hw_version=HARDWARE)
+    assert video_control_states(profile, identity)["inline_brightness"].value == "evidence_gap"
+    identity.subordinate_20_version, identity.subordinate_21_version = "1.00.01", "1.00.28"
+    assert video_control_states(profile, identity)["inline_brightness"].value == "supported"
+    assert video_control_states(profile, identity)["white_balance"].value == "unsupported"

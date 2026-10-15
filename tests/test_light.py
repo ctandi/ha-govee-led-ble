@@ -1058,6 +1058,7 @@ def test_active_saved_effect_uses_current_name_only_for_matching_content(
 
     backend.active_workspaces.get.return_value = SimpleNamespace(
         model="H617A",
+        effect_grammar=None,
         content=saved.content,
         observable_signature="custom:800",
     )
@@ -1277,6 +1278,7 @@ def test_active_custom_remains_in_effect_list_when_categories_are_disabled(
                 get=MagicMock(
                     return_value=SimpleNamespace(
                         model="H617A",
+                        effect_grammar=None,
                         content=SingleEffect(0, 0, 50, ((255, 0, 0),)),
                         observable_signature="custom:24",
                     )
@@ -1317,6 +1319,7 @@ def test_active_custom_uses_the_advertised_namespace_for_saved_resolution(
                 get=MagicMock(
                     return_value=SimpleNamespace(
                         model="H617A",
+                        effect_grammar=None,
                         content=saved.content,
                         observable_signature="custom:24",
                     )
@@ -1337,6 +1340,7 @@ def test_active_custom_uses_the_advertised_namespace_for_saved_resolution(
 async def test_direct_colour_control_clears_active_workspace(mock_coordinator):
     workspace = SimpleNamespace(
         model="H617A",
+        effect_grammar=None,
         content=SingleEffect(0, 0, 50, ((255, 0, 0),)),
         observable_signature="custom:24",
     )
@@ -1382,6 +1386,7 @@ async def test_direct_colour_control_clears_active_workspace(mock_coordinator):
 async def test_failed_foreground_control_preserves_active_workspace(mock_coordinator):
     workspace = SimpleNamespace(
         model="H617A",
+        effect_grammar=None,
         content=SingleEffect(0, 0, 50, ((255, 0, 0),)),
         observable_signature="custom:24",
     )
@@ -1419,6 +1424,7 @@ async def test_custom_effect_selection_with_brightness_preserves_workspace(
 ):
     workspace = SimpleNamespace(
         model="H617A",
+        effect_grammar=None,
         content=SingleEffect(0, 0, 50, ((255, 0, 0),)),
         observable_signature="custom:24",
     )
@@ -1455,6 +1461,7 @@ async def test_brightness_only_control_preserves_active_workspace(
 ):
     workspace = SimpleNamespace(
         model="H617A",
+        effect_grammar=None,
         content=SingleEffect(0, 0, 50, ((255, 0, 0),)),
         observable_signature="custom:24",
     )
@@ -1940,6 +1947,7 @@ def test_segment_colors_attribute_present(light, mock_coordinator):
     assert light.extra_state_attributes == {
         "segment_colors": [[10, 20, 30]] * 15,
         "segment_brightness": [100] * 15,
+        "segment_brightness_source": "initial",
         "segment_state_source": "initial",
     }
 
@@ -1948,6 +1956,7 @@ def test_h6199_segment_surface_is_exposed(h6199_light):
     assert h6199_light.extra_state_attributes == {
         "segment_colors": [[255, 255, 255]] * 15,
         "segment_brightness": [100] * 15,
+        "segment_brightness_source": "initial",
         "segment_state_source": "initial",
     }
 

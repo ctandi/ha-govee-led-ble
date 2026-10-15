@@ -3,12 +3,13 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .effect_domain import H6179MixedDiyEffect, H6179SingleDiyEffect
+from .effect_domain import H6179MixedDiyEffect, H6179SingleDiyEffect, MultiEffect, SingleEffect
 from .generated_protocol_adapter import (
     DIY_PAINTED_EFFECTS,
     build_h617a_diy_multi_body,
     build_h617a_diy_painted_body,
     build_h617a_diy_single_body,
+    build_h6199_pact1_diy_body,
     build_h6199_palette_diy_envelope,
     build_h6199_scene,
 )
@@ -105,6 +106,21 @@ def build_h6179_diy(
 
 def build_h6179_diy_activation(diy_code: int) -> bytes:
     return build_h6179_activation(diy_code)
+
+
+def build_h6199_pact1_diy(content: SingleEffect | MultiEffect, diy_code: int) -> list[bytes]:
+    if type(diy_code) is not int or not 0 <= diy_code <= 255:
+        raise ValueError("A1 DIY upload code must be an unsigned byte")
+    pairs = tuple((pair.family, pair.variant) for pair in content.effects) if isinstance(content, MultiEffect) else ()
+    body = build_h6199_pact1_diy_body(
+        diy_code,
+        255 if isinstance(content, MultiEffect) else content.family,
+        0 if isinstance(content, MultiEffect) else content.variant,
+        content.speed,
+        content.palette,
+        pairs,
+    )
+    return fragment_a1_02(body)
 
 
 def build_h6199_palette_diy(

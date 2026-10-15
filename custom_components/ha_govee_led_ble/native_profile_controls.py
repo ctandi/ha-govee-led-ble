@@ -51,6 +51,7 @@ def prepare_video_mode(
     mode: str,
     requested_values: Mapping[str, Any],
     parameters: Mapping[str, Any] | None = None,
+    preserve_parameters: bool = False,
 ) -> tuple[bytes, dict[str, Any], frozenset[str], Callable[[], None]]:
     """Compile the complete mode before any control side effect, then guard retention."""
     require_video_mode(coordinator.profile, coordinator)
@@ -62,6 +63,12 @@ def prepare_video_mode(
         "capture_region" if field == "full_screen" else "sound_effects" if field == "sound_effects_softness" else field
         for field in requested_values
     )
+    if parameters is not None and "inline_brightness" in parameters:
+        value = parameters["inline_brightness"]
+        if type(value) is not int or not (0 if preserve_parameters else 1) <= value <= 100:
+            raise ValueError("Authored inline video brightness must be from 1 to 100")
+        if value or not preserve_parameters:
+            controls |= {"inline_brightness"}
     retained = {
         field: getattr(coordinator, f"video_{field}")
         for field, supported in (
@@ -126,6 +133,7 @@ async def apply_active_video_mode(
     mode: str,
     requested_values: Mapping[str, Any],
     parameters: Mapping[str, Any] | None = None,
+    preserve_parameters: bool = False,
     writer: ProfileWriter | None = None,
     verify: bool = True,
 ) -> bool:
@@ -133,7 +141,11 @@ async def apply_active_video_mode(
         return False
     await async_require_video_controls(coordinator, ())
     packet, values, controls, check_retained = prepare_video_mode(
-        coordinator, mode=mode, requested_values=requested_values, parameters=parameters
+        coordinator,
+        mode=mode,
+        requested_values=requested_values,
+        parameters=parameters,
+        preserve_parameters=preserve_parameters,
     )
     state_values = {f"video_{field}": value for field, value in values.items()}
     state_values.update(video_mode=mode, effect=None, music_mode="off", diy_code=None)

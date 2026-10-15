@@ -6,7 +6,7 @@ import base64
 from collections.abc import Callable
 from typing import Any
 
-from .const import get_profile
+from .const import ModelProfile, get_profile
 from .generated_protocol_adapter import (
     GoveeShared,
     H6199EffectUpload,
@@ -15,12 +15,14 @@ from .generated_protocol_adapter import (
     WorkshopBody,
     new_child,
     new_rgb,
+    parse_h6199_pact1_studio_source,
     parse_h6199_workshop_content,
     parse_scene_body,
     parse_workshop_body,
     serialize_h6199_workshop_content,
     serialize_scene_body_param,
     serialize_workshop_body_param,
+    validate_h6199_pact1_layers,
 )
 from .layered_scene import (
     _LAYER_UNKNOWN_FLAGS_MASK,
@@ -102,15 +104,21 @@ def encode_layered_scene(scene: LayeredScene) -> bytes:
 def decode_workshop_effect(
     model: str,
     raw_param: bytes,
+    *,
+    profile: ModelProfile | None = None,
 ) -> tuple[LayeredEffect, int]:
     """Decode a Workshop parameter through its model-specific generated structure."""
-    grammar = get_profile(model).effect_grammar
+    grammar = (profile or get_profile(model)).effect_grammar
     if grammar == "H617A":
         parsed, trailing_padding = parse_workshop_body(raw_param)
         records = parsed.layers
     elif grammar == "H6199":
         parsed, trailing_padding = parse_h6199_workshop_content(raw_param)
         records = parsed.blocks
+    elif grammar == "H6199-Pact1":
+        parsed = parse_h6199_pact1_studio_source(raw_param)
+        records = parsed.content.records
+        trailing_padding = len(parsed.content.unknown_tail)
     else:
         raise ValueError(f"{model} has no Workshop grammar")
     return LayeredEffect(tuple(_decode_layer(record.body) for record in records)), trailing_padding
@@ -121,11 +129,15 @@ def encode_workshop_effect(
     effect: LayeredEffect,
     *,
     trailing_padding: int = 0,
+    profile: ModelProfile | None = None,
+    extended: bool = False,
 ) -> bytes:
     """Serialize Workshop layers through the model-specific generated structure."""
-    grammar = get_profile(model).effect_grammar
+    grammar = (profile or get_profile(model)).effect_grammar
+    if extended and grammar != "H6199-Pact1":
+        raise ValueError("Extended Studio requires the legacy H6199 format")
     serializer: Callable[[Any], bytes]
-    if grammar == "H617A":
+    if grammar in {"H617A", "H6199-Pact1"}:
         root = WorkshopBody()
         root.a3_type = b"\x02"
         root.num_layers = len(effect.layers)
@@ -144,9 +156,12 @@ def encode_workshop_effect(
     else:
         raise ValueError(f"{model} has no Workshop grammar")
     try:
-        return serializer(value)
+        payload = serializer(value)
     except SceneParameterTooLargeError as error:
         raise LayeredSceneValidationError(str(error)) from error
+    if grammar == "H6199-Pact1":
+        validate_h6199_pact1_layers(payload, extended=extended)
+    return payload
 
 
 def _encode_record(record_type: Any, parent: Any, layer: EffectLayer) -> Any:

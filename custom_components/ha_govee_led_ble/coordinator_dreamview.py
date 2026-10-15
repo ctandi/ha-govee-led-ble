@@ -52,6 +52,8 @@ class _DreamviewMixin(_CoordinatorBase):
     def _init_dreamview(self) -> None:
         self._dreamview_observed: dict[str, dict[str, Any]] = {}
         self._dreamview_authored: dict[str, Any] | None = None
+        self._dreamview_previous_authored: dict[str, Any] | None = None
+        self._dreamview_pending: dict[str, Any] | None = None
         self._dreamview_loaded = False
         self._dreamview_last_write = "unknown"
         self._dreamview_private_write = False
@@ -65,9 +67,9 @@ class _DreamviewMixin(_CoordinatorBase):
 
     def _handle_dreamview_notification(self, frame: bytes) -> bool:
         """Call after decryption, before generic status routing; ACKs are ignored."""
-        if self.profile.dreamview_grammar != "H6099":
+        if not self.profile.dreamview_reads:
             return False
-        observed = parse_dreamview_status(frame)
+        observed = parse_dreamview_status(frame, profile=self.profile)
         if observed is None:
             return False
         setting, values = observed
@@ -80,7 +82,19 @@ class _DreamviewMixin(_CoordinatorBase):
         if not self._dreamview_loaded:
             if self._dreamview_store is None:
                 raise ValueError("DreamView requires a config entry for private membership persistence")
-            self._dreamview_authored = await self._dreamview_store.async_load()
+            stored = await self._dreamview_store.async_load()
+            if stored is not None and not isinstance(stored, dict):
+                raise ValueError("Invalid private DreamView intent document")
+            if stored is not None and "authored" in stored:
+                for key in ("authored", "previous_authored", "pending"):
+                    if stored.get(key) is not None and not isinstance(stored[key], dict):
+                        raise ValueError("Invalid private DreamView intent document")
+                self._dreamview_authored = stored.get("authored")
+                self._dreamview_previous_authored = stored.get("previous_authored")
+                self._dreamview_pending = stored.get("pending")
+                self._dreamview_last_write = "unknown"
+            else:
+                self._dreamview_authored = stored
             self._dreamview_loaded = True
 
     async def async_replace_dreamview_group(self, members: Sequence[DreamviewMember]) -> None:
@@ -94,17 +108,53 @@ class _DreamviewMixin(_CoordinatorBase):
                 raise ValueError("Packet is not part of the validated DreamView group")
 
         authored = {"operation": "replace", "members": [member.as_dict() for member in members]}
+        await self._async_edit_dreamview_group(authored, packets, validate)
+
+    async def _async_edit_dreamview_group(
+        self, authored: dict[str, Any], packets: Sequence[bytes], validator: Callable[[bytes, ModelProfile], None]
+    ) -> None:
+        profile = self.profile
+
+        def validate(packet: bytes, current: ModelProfile) -> None:
+            if current != profile:
+                raise ValueError("DreamView profile changed; refresh and retry")
+            validator(packet, current)
+
         async with async_control_intent(self, ControlIntent.USER):
             await self._async_load_dreamview()
             assert self._dreamview_store is not None
-            # Save before transmission so an interrupted upload retains the authored request.
-            await self._dreamview_store.async_save(authored)
-            self._dreamview_authored = authored
+            validate(packets[0], self.profile)
+            if authored["operation"] == "delete":
+                authored = {**(self._dreamview_authored or {}), **authored}
+            await self._dreamview_store.async_save(
+                {
+                    "authored": self._dreamview_authored,
+                    "previous_authored": self._dreamview_previous_authored,
+                    "pending": authored,
+                }
+            )
+            self._dreamview_pending = authored
             self._dreamview_private_write = True
             try:
-                await self._async_write_dreamview(packets, validate)
+                await self._async_write_dreamview(
+                    packets,
+                    validate,
+                    require_upload_ack=profile.dreamview_requires_upload_ack and authored["operation"] == "replace",
+                    retry=False,
+                )
             finally:
                 self._dreamview_private_write = False
+            validate(packets[0], self.profile)
+            previous = self._dreamview_authored
+            await self._dreamview_store.async_save(
+                {
+                    "authored": authored,
+                    "previous_authored": previous,
+                    "pending": None,
+                }
+            )
+            self._dreamview_previous_authored = previous
+            self._dreamview_authored, self._dreamview_pending = authored, None
 
     async def async_set_dreamview(self, setting: str, values: Mapping[str, Any]) -> None:
         values = dict(values)
@@ -119,15 +169,11 @@ class _DreamviewMixin(_CoordinatorBase):
     async def async_delete_dreamview_group(self) -> None:
         """Keep the last authored members for recovery, mark only deletion intent."""
         packet = build_dreamview_command("delete_group", {}, self.profile)
-        async with async_control_intent(self, ControlIntent.USER):
-            await self._async_load_dreamview()
-            assert self._dreamview_store is not None
-            authored = {**(self._dreamview_authored or {}), "operation": "delete"}
-            await self._dreamview_store.async_save(authored)
-            self._dreamview_authored = authored
-            await self._async_write_dreamview(
-                (packet,), lambda packet, profile: self._validate_dreamview_command(packet, "delete_group", {}, profile)
-            )
+        await self._async_edit_dreamview_group(
+            {"operation": "delete"},
+            (packet,),
+            lambda packet, profile: self._validate_dreamview_command(packet, "delete_group", {}, profile),
+        )
 
     @staticmethod
     def _validate_dreamview_command(
@@ -137,7 +183,12 @@ class _DreamviewMixin(_CoordinatorBase):
             raise ValueError("Packet does not match the validated DreamView command")
 
     async def _async_write_dreamview(
-        self, packets: Sequence[bytes], validator: Callable[[bytes, ModelProfile], None]
+        self,
+        packets: Sequence[bytes],
+        validator: Callable[[bytes, ModelProfile], None],
+        *,
+        require_upload_ack: bool = False,
+        retry: bool = True,
     ) -> None:
         self._dreamview_last_write = "not_attempted"
 
@@ -146,9 +197,15 @@ class _DreamviewMixin(_CoordinatorBase):
             self._dreamview_last_write = "attempted_unconfirmed"
 
         await self.async_write_effect_sequence(
-            packets, intent=ControlIntent.USER, write_guard=guard, packet_validator=validator
+            packets,
+            intent=ControlIntent.USER,
+            write_guard=guard,
+            packet_validator=validator,
+            require_upload_ack=require_upload_ack,
+            upload_ack_index=len(packets) - 1 if require_upload_ack else None,
+            retry=retry,
         )
-        self._dreamview_last_write = "sent_unconfirmed"
+        self._dreamview_last_write = "acknowledged_unconfirmed" if require_upload_ack else "sent_unconfirmed"
 
     async def async_read_dreamview_state(self, *, timeout: float = 2.0) -> dict[str, Any]:
         """Query only known individual reads; absent replies remain unknown.
@@ -179,6 +236,8 @@ class _DreamviewMixin(_CoordinatorBase):
                 await asyncio.sleep(min(0.05, remaining))
             return {
                 "authored": copy.deepcopy(self._dreamview_authored),
+                "previous_authored": copy.deepcopy(self._dreamview_previous_authored),
+                "pending": copy.deepcopy(self._dreamview_pending),
                 "authored_source": "local_request",
                 "membership_confirmed": False,
                 "membership_readback": "unavailable",

@@ -373,21 +373,56 @@ fake-radio regression is
 `test_issue_293_setup_requires_only_basic_readback`; it also checks that missing
 basic replies still fail rather than loading optimistically.
 
-Retired from the active investigation: WB state loss, hidden Spectrum/Rolling
-colour controls, rejection of sensitivity zero, misclassified DIY readback and
-stale segment rollback. Their fixes and qualification limits remain recorded
-below. Expanded DIY, legacy DreamView and cloud firmware checks are separate
-work, not prerequisites for resolving this setup failure.
+The fixes for newer-controller WB state loss, hidden Spectrum/Rolling colour
+controls, rejection of sensitivity zero, misclassified DIY readback and stale
+segment rollback remain regression requirements.  Their qualification limits
+are recorded below.  The legacy audit now includes basic controls, music,
+scenes, uploads, video, installation settings and the original DreamView
+encoding.  Resolving the immediate setup failure does not complete that audit.
+Cloud firmware operations remain outside integration scope.
 
 Remaining gate: an owner test on the older hardware with an exact candidate
 build. If setup still fails, identify missing/rejected basic replies and the
 actual GATT characteristics from that attempt. Pact 1 differs in brightness,
 colour, music and segment formats, not just segment readback. Positively
-identified Pact 1/1 therefore selects the [power-only profile](h6199-pact1.md);
+identified Pact 1/1 now selects the [Experimental legacy candidate](h6199-pact1.md);
 the reporter's hardware version alone does not select it. The exact-version
 test above uses synthetic percentage/static-mode replies and establishes setup
 policy, not qualification of the older wire formats. The claimed `AA 14`
 handshake, three-second watchdog and need for a longer timeout remain hypotheses.
+
+### Reported encryption marker
+
+The [latest owner response](https://github.com/teh-hippo/ha-govee-led-ble/issues/293#issuecomment-6128614924)
+reports `v7.11.1-rc.1.h601c`, an exact one-byte `00` information response and
+`encryption_selection_failed`.  That build predates the explicit-plaintext
+advertisement fix included in
+[v7.12.0](https://github.com/teh-hippo/ha-govee-led-ble/releases/tag/v7.12.0).
+The reported rejection occurs before subscription, identity queries and
+keepalive, so it is not evidence of a watchdog or missing startup query.
+
+The candidate marker schema additionally recognises exactly `00` as a complete
+legacy plaintext response, without requiring a recognised advertisement.
+It does not override positive encryption evidence or classify arbitrary
+malformed/read-failed markers as plaintext.  See the
+[selection policy and qualification limits](h6199-pact1.md#encryption-and-setup).
+The reporter's actual Pact, Bluetooth route and current-release setup result
+remain outstanding.  No new legacy lighting, effect or group capability is
+qualified by the marker fix.
+
+### Complete legacy candidate
+
+The candidate replaces the power-only restriction with generated legacy
+command/status/effect routes, revision-aware music and catalogue limits,
+RGB-only segment state and recovery, ordinary/mixed DIY, native/layered scenes,
+inline-video identity gates, independent installation settings and original
+DreamView.  HA and Studio use the same effective profile.  The complete scope,
+decode-only fields and physical qualification limits are in the
+[Pact 1 support record](h6199-pact1.md).
+
+This is software support, not new hardware evidence.  The reporter's actual
+Pact and visible behaviour still require an authorised exact-SHA prerelease.
+The newer-device captures above do not qualify the older wire routes.
 
 ### Independent RC Review
 

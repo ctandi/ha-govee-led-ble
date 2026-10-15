@@ -58,6 +58,7 @@ class ActiveEffectWorkspace:
     updated_at: str
     generation: int
     confidence: ObservationConfidence = ObservationConfidence.WRITE_COMPLETED
+    effect_grammar: str | None = None
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -73,6 +74,13 @@ class ActiveEffectWorkspace:
                 error_type=EffectStorageError,
             )
         validate_timestamp(self.updated_at, "active-workspace timestamp", error_type=EffectStorageError)
+        if self.effect_grammar is not None:
+            validate_bounded_string(
+                self.effect_grammar,
+                "active-workspace effect grammar",
+                maximum=MAX_IDENTIFIER_LENGTH,
+                error_type=EffectStorageError,
+            )
         validate_revision(
             self.generation,
             "active-workspace generation",
@@ -94,6 +102,7 @@ class ActiveEffectWorkspace:
         return {
             "config_entry_id": self.config_entry_id,
             "model": self.model,
+            **({"effect_grammar": self.effect_grammar} if self.effect_grammar is not None else {}),
             "selector_label": self.selector_label,
             "content": effect_content_to_dict(self.content),
             "content_hash": self.content_hash,
@@ -132,6 +141,7 @@ class ActiveEffectWorkspace:
         value = cls(
             config_entry_id=required_persisted_string(raw, "config_entry_id"),
             model=model,
+            effect_grammar=optional_persisted_string(raw, "effect_grammar"),
             selector_label=required_persisted_string(raw, "selector_label"),
             content=content,
             origin=origin,

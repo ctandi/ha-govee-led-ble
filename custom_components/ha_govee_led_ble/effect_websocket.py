@@ -32,7 +32,7 @@ from .effect_catalogue import (
 )
 from .effect_compiler import compile_application, resolve_diy_code
 from .effect_contracts import EditorApiInfo, device_effect_capabilities
-from .effect_deployments import DeploymentSnapshot
+from .effect_deployments import DeploymentSnapshot, effect_grammar_matches
 from .effect_domain import (
     EffectValidationError,
     OpaqueContent,
@@ -209,7 +209,7 @@ def _device_payload(
 ) -> dict[str, Any]:
     coordinator = entry.runtime_data
     observed = backend.device_cache.get(entry.entry_id)
-    if observed is None:
+    if observed is None or not effect_grammar_matches(coordinator.model, observed.effect_grammar, coordinator.profile):
         observed = backend.engine.reconcile_current(
             coordinator,
             config_entry_id=entry.entry_id,
@@ -777,7 +777,7 @@ async def ws_music_edit_retained(hass: HomeAssistant, connection: ActiveConnecti
         # The existing apply path compiles the complete body before acquiring control,
         # then guards its captured revision at each physical write.
         await coordinator.async_apply_music_params(
-            music_code_for(coordinator.model, msg["mode"]),
+            music_code_for(coordinator.model, msg["mode"], profile=coordinator.profile),
             parameters=msg["parameters"],
             calm=msg.get("calm")
             if "calm" in msg or coordinator.music_body is None
@@ -1477,7 +1477,9 @@ async def ws_apply_snapshot(
             ),
         )
         operation_id = UUID(msg["operation_id"]) if "operation_id" in msg else None
-        diy_code = resolve_diy_code(item, msg.get("diy_code"), model=entry.runtime_data.model)
+        diy_code = resolve_diy_code(
+            item, msg.get("diy_code"), model=entry.runtime_data.model, profile=entry.runtime_data.profile
+        )
         compile_application(
             item,
             entry.runtime_data.model,

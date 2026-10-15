@@ -411,7 +411,7 @@ def test_extract_model(name, expected):
     ("model", "expected"),
     [
         ("H617A", ["scenes", "effects", "multi_layered", "reactive", "advanced"]),
-        ("H6199", ["video", "scenes", "effects", "reactive", "advanced"]),
+        ("H6199", ["video", "scenes", "effects", "multi_layered", "reactive", "advanced"]),
     ],
 )
 async def test_options_flow_shows_supported_category_checkboxes(hass: HomeAssistant, model: str, expected: list[str]):
@@ -450,6 +450,7 @@ async def test_options_flow_uses_stored_category_list_for_checkbox_defaults(hass
         "scenes": True,
         "video": False,
         "effects": False,
+        "multi_layered": False,
         "reactive": True,
         "advanced": False,
         CONF_PREFIX_EFFECT_NAMES: False,
@@ -660,6 +661,7 @@ async def test_options_flow_saves_ordered_studio_categories(hass: HomeAssistant)
                 "scenes": True,
                 "video": False,
                 "effects": False,
+                "multi_layered": False,
                 "reactive": True,
                 "advanced": False,
                 CONF_PREFIX_EFFECT_NAMES: False,
@@ -686,6 +688,7 @@ async def test_options_flow_persists_prefix_preference(hass: HomeAssistant):
                 "video": True,
                 "scenes": True,
                 "effects": False,
+                "multi_layered": False,
                 "reactive": False,
                 "advanced": False,
                 CONF_PREFIX_EFFECT_NAMES: True,

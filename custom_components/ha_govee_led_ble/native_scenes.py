@@ -3,7 +3,7 @@
 import base64
 from dataclasses import replace
 
-from .const import get_profile
+from .const import ModelProfile, get_profile
 from .effect_domain import LayeredScene, PaletteScene
 from .generated_protocol_adapter import build_scene_activation
 from .layered_scene import CatalogueRef, LayeredEffect
@@ -56,14 +56,16 @@ def build_native_scene_packets(
     *,
     speed_index: int | None = None,
     canonical_body: bytes | None = None,
+    profile: ModelProfile | None = None,
 ) -> list[bytes]:
     """Build a catalogue scene upload and activation with its resolved speed default."""
-    if get_profile(model).command_grammar == "H6179":
+    profile = profile or get_profile(model)
+    if profile.command_grammar == "H6179":
         if speed_index is not None:
             raise ValueError("H6179 native scenes are selector-only and do not accept speed_index")
         if canonical_body is not None:
             raise ValueError("H6179 native scenes are selector-only and do not accept canonical_body")
-        return [build_scene_activation(model, scene_selector_code(model, scene))]
+        return [build_scene_activation(model, scene_selector_code(model, scene), profile=profile)]
 
     payload, _resolved_speed = resolve_native_scene_body(
         scene,
@@ -71,7 +73,9 @@ def build_native_scene_packets(
         canonical_body=canonical_body,
     )
     upload = fragment_a3(scene.scene_type, payload) if payload else []
-    activation = build_scene_activation(model, scene.code, scene.music_code)
+    activation = build_scene_activation(
+        model, scene.code, 0 if profile.effect_grammar == "H6199-Pact1" else scene.music_code, profile=profile
+    )
     return [*upload, activation]
 
 

@@ -97,6 +97,7 @@ class VideoFirmwareCondition:
             "capture_region",
             "saturation",
             "sound_effects",
+            "inline_brightness",
             "white_balance",
             "relative_brightness",
             "blank_screen",
@@ -129,6 +130,7 @@ class ModelProfile:
     dreamview_operations: frozenset[str] = frozenset()
     dreamview_reads: frozenset[str] = frozenset()
     dreamview_max_sub_devices: int = 0
+    dreamview_requires_upload_ack: bool = False
     video_firmware_conditions: tuple[VideoFirmwareCondition, ...] = ()
     # Exact-product revision policy, independent of compatible wire grammars.
     video_revision_policy: str | None = None
@@ -136,6 +138,7 @@ class ModelProfile:
     setup_required_read_domains: frozenset[ReadDomain] = frozenset()
     supports_rgb: bool = False
     supports_installation_direction: bool = False
+    h6199_controls: frozenset[str] = frozenset()
     supports_color_temperature: bool = False
     min_color_temp_kelvin: int = 2000
     max_color_temp_kelvin: int = 9000
@@ -147,6 +150,7 @@ class ModelProfile:
     supports_video_saturation: bool = False
     video_saturation_min: int = 0
     supports_video_sound_effects: bool = False
+    supports_video_inline_brightness: bool = False
     supports_advanced_effects: bool = False
     supports_multi_layered_effects: bool = False
     supports_white_balance: bool = False
@@ -189,11 +193,16 @@ class ModelProfile:
     # When set, Type04 custom effects upload as A1 command-02 frames led by this selector and activate with it.
     a1_diy_selector: int | None = None
     diy_requires_upload_ack: bool = False
+    scene_requires_upload_ack: bool = False
     boolean_controls: frozenset[str] = frozenset()
     default_effect_families_override: frozenset[str] | None = None
     effect_readback: str = "none"
 
     def __post_init__(self) -> None:
+        if not self.h6199_controls <= {"strip_direction", "camera_position", "gradient", "camera_status"}:
+            raise ValueError("unknown H6199 native control")
+        if self.h6199_controls and (self.command_grammar is None or self.status_grammar is None):
+            raise ValueError("native controls require command and status grammars")
         if not self.boolean_controls <= {"gradual", "limit"}:
             raise ValueError("unknown boolean device setting")
         if self.boolean_controls and (self.command_grammar is None or self.status_grammar is None):
@@ -248,6 +257,7 @@ class ModelProfile:
             self.supports_video_capture_region
             or self.supports_video_saturation
             or self.supports_video_sound_effects
+            or self.supports_video_inline_brightness
             or self.supports_white_balance
             or self.supports_relative_brightness
             or self.supports_blank_screen
@@ -294,7 +304,15 @@ class ModelProfile:
 
     @property
     def requires_notifications(self) -> bool:
-        return bool(self.read_domains or self.dreamview_reads or self.boolean_controls)
+        return bool(
+            self.read_domains
+            or self.dreamview_reads
+            or self.boolean_controls
+            or self.diy_requires_upload_ack
+            or self.scene_requires_upload_ack
+            or self.music_requires_upload_ack
+            or self.dreamview_requires_upload_ack
+        )
 
     @property
     def state_readable(self) -> bool:
@@ -768,6 +786,7 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         effect_grammar="H6199",
         video_grammar="H6199",
         video_revision_policy="H6199",
+        h6199_controls=frozenset({"strip_direction", "camera_position", "gradient", "camera_status"}),
         read_domains=frozenset(
             {
                 ReadDomain.POWER,
@@ -798,6 +817,7 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         supports_video_capture_region=True,
         supports_video_saturation=True,
         supports_video_sound_effects=True,
+        supports_video_inline_brightness=True,
         # These independently captured video registers have byte-exact builders.
         supports_white_balance=True,
         supports_white_balance_readback=True,
@@ -816,6 +836,7 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         music_sensitivity_max=100,
         supports_music_color=True,
         supports_advanced_effects=True,
+        supports_multi_layered_effects=True,
         whole_device_mask=0x7FFF,
         # Static readback identifies the mode but exposes rendered colour only through segment
         # queries. Kelvin remains last-known while its RGB companion matches.
@@ -837,15 +858,101 @@ BLE_DISCOVERABLE_MODELS = frozenset({"H601C", "H6076", "H6125", "H6179", "H617A"
 
 UNSUPPORTED_PROFILE = ModelProfile("Unsupported Govee device")
 
-H6199_PACT1_PROFILE = ModelProfile(
-    "H6199 Pact 1 (power only)",
-    support_quality=SupportQuality.PARTIAL,
-    command_grammar="H6199",
-    command_operations=frozenset({"power"}),
-    status_grammar="H6199",
-    read_domains=frozenset({ReadDomain.POWER, ReadDomain.FIRMWARE, ReadDomain.HARDWARE}),
-    setup_required_read_domains=frozenset({ReadDomain.POWER}),
-)
+
+def _h6199_pact1_profile(firmware: str | None, hardware: str | None) -> ModelProfile:
+    from .effect_contracts import CapabilityState
+    from .generated_protocol_adapter import H6199Pact1EffectUpload, h6199_pact1_outbound_transform
+    from .video_applicability import h6199_service_scenes_state
+
+    return ModelProfile(
+        "H6199 DreamView T1 (Pact 1 candidate)",
+        support_quality=SupportQuality.EXPERIMENTAL,
+        command_grammar="H6199",
+        status_grammar="H6199-Pact1",
+        effect_grammar="H6199-Pact1",
+        video_grammar="H6199-Pact1",
+        video_revision_policy="H6199",
+        outbound_transform=h6199_pact1_outbound_transform,
+        brightness_wire_range=(20, 254),
+        colour_mode_query_selector=1,
+        read_domains=frozenset(
+            {
+                ReadDomain.POWER,
+                ReadDomain.BRIGHTNESS,
+                ReadDomain.COLOUR_MODE,
+                ReadDomain.FIRMWARE,
+                ReadDomain.HARDWARE,
+                ReadDomain.SUBORDINATE_20,
+                ReadDomain.SUBORDINATE_21,
+                ReadDomain.SEGMENTS,
+            }
+        ),
+        setup_required_read_domains=frozenset({ReadDomain.POWER, ReadDomain.BRIGHTNESS, ReadDomain.COLOUR_MODE}),
+        supports_rgb=True,
+        supports_color_temperature=True,
+        min_color_temp_kelvin=2000,
+        max_color_temp_kelvin=9000,
+        supports_custom_effects=True,
+        supports_scenes=h6199_service_scenes_state(1, 1, firmware, hardware) is CapabilityState.SUPPORTED,
+        supports_multi_layered_effects=True,
+        supports_advanced_effects=True,
+        music_modes=_H6199_MUSIC_MODES,
+        music_variants=(
+            MusicVariant(MUSIC_MODE_SLUGS["energetic"], "H6199 Pact 1 candidate #293", supports_fixed_colour=False),
+            MusicVariant(MUSIC_MODE_SLUGS["rhythm"], "H6199 Pact 1 candidate #293", supports_style=True),
+            MusicVariant(MUSIC_MODE_SLUGS["spectrum"], "H6199 Pact 1 candidate #293"),
+            MusicVariant(MUSIC_MODE_SLUGS["rolling"], "H6199 Pact 1 candidate #293"),
+        ),
+        music_sensitivity_max=99,
+        supports_music_color=True,
+        whole_device_mask=0x7FFF,
+        segment_count=15,
+        segment_group_size=4,
+        supports_segment_writes=True,
+        supports_segment_color_temperature=True,
+        scene_catalogue_sku="H6199",
+        a1_diy_selector=254,
+        advanced_diy_selector=int(H6199Pact1EffectUpload.StudioSlot.layered),
+        diy_requires_upload_ack=True,
+        scene_requires_upload_ack=True,
+        supports_video_mode=True,
+        video_modes=("movie", "game"),
+        supports_video_capture_region=True,
+        supports_video_saturation=True,
+        video_saturation_min=1,
+        supports_video_sound_effects=True,
+        supports_video_inline_brightness=True,
+        h6199_controls=frozenset({"strip_direction", "camera_position", "gradient", "camera_status"}),
+        dreamview_grammar="H6199-Pact1",
+        dreamview_operations=frozenset(
+            {
+                "replace_group",
+                "delete_group",
+                "switch_group",
+                "member_brightness",
+                "same_brightness",
+                "member_connect",
+                "saturation",
+                "sample",
+                "sound",
+            }
+        ),
+        dreamview_reads=frozenset(
+            {
+                "switch_group",
+                "member_brightness",
+                "same_brightness",
+                "member_connect",
+                "saturation",
+                "sample",
+                "sound",
+            }
+        ),
+        dreamview_max_sub_devices=5,
+        dreamview_requires_upload_ack=True,
+        default_effect_families_override=frozenset({EFFECT_FAMILY_VIDEO}),
+        effect_readback="selector_only",
+    )
 
 
 # Other H6125 controller generations answer only the shared power and identity frames.
@@ -924,8 +1031,10 @@ def device_profile(
                 read_domains=profile.read_domains | {ReadDomain.SEGMENTS},
             )
         return profile
-    if model == "H6199" and (pact_type, pact_code) == (1, 1):
-        return H6199_PACT1_PROFILE
+    if model == "H6199":
+        if (pact_type, pact_code) == (1, 1):
+            return _h6199_pact1_profile(firmware, hardware)
+        return replace(get_profile(model), supports_multi_layered_effects=False, supports_video_inline_brightness=False)
     if model == "H6125":
         return _h6125_profile(pact_type, pact_code, firmware, hardware)
     if model == "H6102":

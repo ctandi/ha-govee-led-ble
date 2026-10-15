@@ -9,6 +9,7 @@ import {
   videoCaptureAreaFullScreen,
   videoCaptureAreaValue,
 } from "../../src/profile-model";
+import { decodeEffectContent } from "../../src/validation";
 
 test("profile clones isolate nested colour, parameter, and brightness state", () => {
   const music = {
@@ -69,6 +70,19 @@ test("binary profile controls use stable select values", () => {
   expect(videoCaptureAreaValue(false)).toBe("part");
   expect(videoCaptureAreaFullScreen("full")).toBe(true);
   expect(videoCaptureAreaFullScreen("part")).toBe(false);
+});
+
+test("legacy inline video brightness survives decoding with its authoring bounds", () => {
+  const content = {
+    kind: "video_profile", model: "H6199", mode: "movie",
+    full_screen: null, saturation: null, sound_effects: null, sound_effects_softness: null,
+    white_balance_position: null, relative_brightness: null, blank_screen: null,
+    inline_brightness: 50,
+  };
+  expect(decodeEffectContent(content)).toEqual(content);
+  for (const value of [0, 101, true]) {
+    expect(() => decodeEffectContent({...content, inline_brightness: value})).toThrow();
+  }
 });
 
 test("music Style help distinguishes both options in project wording", () => {

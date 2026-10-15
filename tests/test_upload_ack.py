@@ -18,11 +18,15 @@ from custom_components.ha_govee_led_ble.effect_domain import LibraryItem, MusicP
 from custom_components.ha_govee_led_ble.effect_preview import PreviewPhase
 from custom_components.ha_govee_led_ble.effect_runtime import EffectDeploymentEngine
 from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
+    build_h617a_diy_activation,
     build_scene_activation,
+    h6199_pact1_outbound_transform,
     parse_command_ack_result,
     upload_ack_success,
 )
-from custom_components.ha_govee_led_ble.transport import fragment_a3, xor_checksum
+from custom_components.ha_govee_led_ble.native_scenes import build_native_scene_packets
+from custom_components.ha_govee_led_ble.scenes import SCENE_ENTRIES
+from custom_components.ha_govee_led_ble.transport import fragment_a1_02, fragment_a3, xor_checksum
 from tests.storage_test_double import InMemoryVersionedDocumentStore
 from tests.test_effect_preview import _manager, _open
 
@@ -101,7 +105,7 @@ def test_generated_ack_offsets_and_subtype(prefix, subtype, expected):
     assert result.parsed is not None
     assert result.parser == "h617a_command_ack"
     assert type(result.parsed).__module__.endswith(".h617a_command_ack")
-    assert upload_ack_success(result.parsed, subtype) is expected
+    assert upload_ack_success(result.parsed, (0xA3, subtype)) is expected
 
 
 def test_ack_uses_command_grammar_independently_of_video(monkeypatch):
@@ -109,6 +113,72 @@ def test_ack_uses_command_grammar_independently_of_video(monkeypatch):
     assert parse_command_ack_result(MUSIC_OK, "H9908").parsed.is_success
     monkeypatch.setitem(MODEL_PROFILES, "H9908", ModelProfile("Synthetic ACK", video_grammar="H6199"))
     assert parse_command_ack_result(MUSIC_OK, "H9908").parsed is None
+
+
+@pytest.mark.parametrize("response,outcome", [("a10200", "activated"), ("a10201", "rejected"), ("a30200", "timeout")])
+async def test_legacy_a1_upload_requires_matching_protocol_ack_before_selector(connected, response, outcome):
+    c, client = connected
+    c.profile = replace(
+        c.profile,
+        command_grammar="H6199",
+        effect_grammar="H6199-Pact1",
+        outbound_transform=h6199_pact1_outbound_transform,
+    )
+    packets = fragment_a1_02(bytes.fromhex("fe00003203ff000000"))
+    activation = build_h617a_diy_activation(254)
+
+    async def write(_uuid, packet, **kwargs):
+        if packet == packets[-1]:
+            receive(client, frame(response))
+
+    client.write_gatt_char.side_effect = write
+    options = {"final_packet": activation}
+    if outcome == "activated":
+        await write_sequence(c, packets, len(packets) - 1, **options)
+    else:
+        with pytest.raises(RuntimeError if outcome == "rejected" else TimeoutError):
+            await write_sequence(c, packets, len(packets) - 1, **options)
+    assert [call.args[1] for call in client.write_gatt_char.call_args_list] == (
+        [*packets, activation] if outcome == "activated" else packets
+    )
+    assert c._upload_ack is None
+    assert not c._field_revisions
+
+
+@pytest.mark.parametrize("kind", [1, 2])
+@pytest.mark.parametrize("preview", [False, True])
+@pytest.mark.parametrize("acknowledged", [False, True])
+async def test_legacy_native_scene_uses_shared_upload_barrier(connected, kind, preview, acknowledged):
+    c, client = connected
+    c.model = "H6199"
+    c.profile = replace(
+        MODEL_PROFILES[c.model],
+        effect_grammar="H6199-Pact1",
+        status_grammar="H6199-Pact1",
+        outbound_transform=h6199_pact1_outbound_transform,
+        brightness_wire_range=(20, 254),
+        scene_requires_upload_ack=True,
+    )
+    c.is_on = True
+    scene = next(scene for scene in SCENE_ENTRIES["H6199"] if scene.scene_type == kind)
+    packets = build_native_scene_packets(c.model, scene, profile=c.profile)
+    physical = [h6199_pact1_outbound_transform(packet) for packet in packets]
+
+    async def write(_uuid, packet, **kwargs):
+        if packet == physical[-2] and acknowledged:
+            receive(client, frame(f"a3{kind:02x}00"))
+
+    client.write_gatt_char.side_effect = write
+    options = {"writer": lambda packet, **kw: preview_writer(c, packet, **kw)} if preview else {}
+    if acknowledged:
+        await c.async_apply_native_scene("software", scene_entry=scene, verify=False, **options)
+    else:
+        with pytest.raises(TimeoutError):
+            await c.async_apply_native_scene("software", scene_entry=scene, verify=False, **options)
+    assert [call.args[1] for call in client.write_gatt_char.call_args_list] == (
+        physical if acknowledged else physical[:-1]
+    )
+    assert not c._field_revisions and c._upload_ack is None
 
 
 async def test_ordinary_ack_is_diagnostic_not_power_readback(connected):
@@ -347,7 +417,7 @@ async def test_saved_native_diy_apply_uses_ack_gate(connected, monkeypatch, posi
     if positive:
         await engine.async_apply_saved(c, item, config_entry_id="entry-a", updated_at="2026-09-16T00:00:00Z")
     else:
-        with pytest.raises(RuntimeError, match="rejected A3"):
+        with pytest.raises(RuntimeError, match="rejected effect upload"):
             await engine.async_apply_saved(c, item, config_entry_id="entry-a", updated_at="2026-09-16T00:00:00Z")
     sent = [call.args[1] for call in client.write_gatt_char.call_args_list]
     assert sent == list(compiled.packets if positive else compiled.upload_packets)

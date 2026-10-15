@@ -13,6 +13,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
 from .ble_connection import clear_stale_gatt_recovery
@@ -217,6 +218,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeBLEConfigEntry) -> 
         h6102_firmware_source="configured" if h6102_firmware is not None else None,
         h6102_pact=entry.data.get(CONF_H6102_PACT) if model == "H6102" else None,
     )
+    integration = await async_get_integration(hass, DOMAIN)
+    _LOGGER.debug("Starting BLE setup: integration_version=%s model=%s", integration.version, model)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     if effect_backend := get_effect_backend(hass):

@@ -40,6 +40,8 @@ def expectations_from_packet(
         }
         if profile.supports_video_saturation:
             expectations["video_saturation"] = int(detail.saturation)
+        if profile.supports_video_capture_region:
+            expectations["video_full_screen"] = detail.region.name == "all"
         if profile.supports_video_sound_effects:
             expectations["video_sound_effects"] = bool(detail.sound_effects)
             expectations["video_sound_effects_softness"] = int(detail.softness)
@@ -68,7 +70,7 @@ def expectations_from_packet(
         mode = getattr(generated.body.sub_mode, "name", None)
         detail = generated.body.detail
         if mode == "music":
-            music_mode = music_slug_for(model, int(detail.mode))
+            music_mode = music_slug_for(model, int(detail.mode), profile=profile)
             expectations["music_mode"] = music_mode
             expectations["music_sensitivity"] = int(detail.sensitivity)
             if not getattr(detail, "is_legacy", True):
@@ -82,7 +84,7 @@ def expectations_from_packet(
             )
             return expectations
         if mode == "video":
-            if profile.video_grammar not in {"H6099", "H6199"}:
+            if profile.video_grammar not in {"H6099", "H6199", "H6199-Pact1"}:
                 return expectations
             expectations["video_mode"] = detail.source.name
             if profile.supports_video_capture_region:
@@ -103,7 +105,7 @@ def expectations_from_packet(
         mode = getattr(generated.body.sub, "name", None)
         detail = generated.body.sub_body
         if mode == "music":
-            music_mode = music_slug_for(model, int(detail.mode_id))
+            music_mode = music_slug_for(model, int(detail.mode_id), profile=profile)
             expectations["music_mode"] = music_mode
             expectations["music_sensitivity"] = int(detail.sensitivity)
             if not detail.is_legacy:
@@ -202,7 +204,7 @@ def _expected_color_mode(
         if mode == "diy":
             return ParsedMode.DIY, int(detail.code)
         if mode == "video":
-            return (ParsedMode.VIDEO, None) if profile.video_grammar in {"H6099", "H6199"} else None
+            return (ParsedMode.VIDEO, None) if profile.video_grammar in {"H6099", "H6199", "H6199-Pact1"} else None
         if mode == "scene":
             return ParsedMode.SCENE, None
         if mode == "static_colour":

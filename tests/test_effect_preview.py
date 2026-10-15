@@ -13,7 +13,7 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 
-from custom_components.ha_govee_led_ble.const import DOMAIN, EFFECT_FAMILY_SCENES, get_profile
+from custom_components.ha_govee_led_ble.const import DOMAIN, EFFECT_FAMILY_SCENES, device_profile, get_profile
 from custom_components.ha_govee_led_ble.control_arbiter import BLEControlArbiter, ControlIntent
 from custom_components.ha_govee_led_ble.coordinator import GoveeBLECoordinator
 from custom_components.ha_govee_led_ble.effect_active_workspace import (
@@ -2080,22 +2080,29 @@ async def test_h6179_preview_revalidates_fresh_mode_before_zero_effect_writes(
     await manager.async_shutdown()
 
 
-async def test_h6179_preview_holds_previews_through_admission_check_before_selector(
+@pytest.mark.parametrize("model", ["H6179", "H6199"])
+async def test_preview_holds_previews_through_admission_check_before_selector(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
+    model: str,
 ) -> None:
+    from tests.test_h6199_native_controls import frame
+
     coordinator = GoveeBLECoordinator(
         hass,
         "AA:BB:CC:DD:EE:79",
-        "H6179",
+        model,
         configuration_url="homeassistant://ha-govee-led-ble/editor/entry-a",
     )
+    if model == "H6199":
+        coordinator.profile = device_profile(model, 1, 1)
+    diy_code = 0x1234 if model == "H6179" else 254
     coordinator.is_on = True
-    coordinator.diy_code = 0x1234
+    coordinator.diy_code = diy_code
     coordinator.async_preview_preflight = AsyncMock()  # type: ignore[method-assign]
     coordinator.refresh_state = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    item = _h6179_item()
-    compiled = compile_application(item, "H6179", diy_code=0x1234)
+    item = _h6179_item() if model == "H6179" else _item("Legacy DIY")
+    compiled = compile_application(item, model, diy_code=diy_code, profile=coordinator.profile)
     assert isinstance(compiled, CompiledEffect)
     writes: list[bytes] = []
     user_entered = asyncio.Event()
@@ -2110,11 +2117,16 @@ async def test_h6179_preview_holds_previews_through_admission_check_before_selec
         assert response is False
         writes.append(packet)
         if len(writes) == len(compiled.upload_packets):
+            if model == "H6199":
+                coordinator._notify_callback(None, bytearray(frame("a10200")))
             foreground = asyncio.create_task(user_command())
             await asyncio.sleep(0)
 
-    client = MagicMock(is_connected=True, write_gatt_char=AsyncMock(side_effect=write_gatt_char))
+    client = MagicMock(
+        is_connected=True, start_notify=AsyncMock(), write_gatt_char=AsyncMock(side_effect=write_gatt_char)
+    )
     coordinator._client = client
+    await coordinator._start_notify()
     coordinator._ensure_connected = AsyncMock(return_value=client)  # type: ignore[method-assign]
     manager, _cache = await _manager(hass, monkeypatch, coordinator)
     owner = object()
@@ -2128,7 +2140,7 @@ async def test_h6179_preview_holds_previews_through_admission_check_before_selec
         sequence=1,
         updated_at="2026-09-03T00:00:00Z",
         item=item,
-        diy_code=0x1234,
+        diy_code=diy_code,
     )
     await manager.async_wait_idle("entry-a")
     assert foreground is not None

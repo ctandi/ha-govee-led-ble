@@ -21,20 +21,42 @@ def video_identity_fields(profile: ModelProfile) -> frozenset[str]:
     return fields
 
 
-def h6199_camera_controls_state(model: str, identity: object) -> CapabilityState:
-    """Installation/status controls qualified only on the captured H6199 revision.
-
-    Other revisions remain unqualified, not inferred compatible or incompatible.
-    """
+def h6199_camera_controls_state(model: str, identity: object, control: str = "camera_status") -> CapabilityState:
+    """Authorise an individually declared control without granting sibling settings."""
     if model != "H6199":
         return CapabilityState.UNSUPPORTED
+    profile = getattr(identity, "profile", None)
+    if profile is not None and control not in profile.h6199_controls:
+        return CapabilityState.UNSUPPORTED
+    pact = (getattr(identity, "pact_type", None), getattr(identity, "pact_code", None))
+    if profile is not None and profile.effect_grammar == "H6199-Pact1" and pact == (1, 1):
+        return CapabilityState.SUPPORTED
     versions = tuple(
         identity_version(getattr(identity, field, None))
         for field in ("fw_version", "hw_version", "subordinate_20_version", "subordinate_21_version")
     )
     qualified = (11004, 30201, 10300, 10033)
-    pact = (getattr(identity, "pact_type", None), getattr(identity, "pact_code", None))
     return CapabilityState.SUPPORTED if versions == qualified and pact == (2, 1) else CapabilityState.EVIDENCE_GAP
+
+
+def _condition_state(*checks: bool | None) -> CapabilityState:
+    if False in checks:
+        return CapabilityState.UNSUPPORTED
+    return CapabilityState.EVIDENCE_GAP if None in checks else CapabilityState.SUPPORTED
+
+
+def h6199_service_scenes_state(
+    pact_type: int | None, pact_code: int | None, firmware: object, hardware: object
+) -> CapabilityState:
+    pact = pact_type, pact_code
+    if pact in ((3, 1), (4, 1)):
+        return CapabilityState.SUPPORTED
+    fw, hw = identity_version(firmware), identity_version(hardware)
+    result = _condition_state(
+        None if hw is None else hw // 10000 in (1, 3) and hw // 100 != 304,
+        None if fw is None or hw is None else fw >= (10601 if hw // 10000 == 1 else 10702),
+    )
+    return CapabilityState.EVIDENCE_GAP if result is CapabilityState.UNSUPPORTED and None in pact else result
 
 
 def _h6199_video_states(identity: object) -> dict[str, CapabilityState]:
@@ -46,34 +68,29 @@ def _h6199_video_states(identity: object) -> dict[str, CapabilityState]:
     )
     pact = (getattr(identity, "pact_type", None), getattr(identity, "pact_code", None))
 
-    def state(*checks: bool | None) -> CapabilityState:
-        if False in checks:
-            return CapabilityState.UNSUPPORTED
-        return CapabilityState.EVIDENCE_GAP if None in checks else CapabilityState.SUPPORTED
-
-    white_balance = state(
+    white_balance = _condition_state(
         None if fw is None else fw >= 10811,
         None if hw is None else hw >= 30201,
         None if wifi_fw is None else wifi_fw >= 10023,
         None if wifi_hw is None else wifi_hw >= 10300,
     )
-    relative = state(
+    relative = _condition_state(
         None if fw is None else fw >= 11002,
         None if hw is None else hw in (30201, 30210),
         None if wifi_fw is None else wifi_fw >= 10030,
         None if wifi_hw is None else wifi_hw == 10300,
     )
-    if pact in ((3, 1), (4, 1)):
-        sound = CapabilityState.SUPPORTED
-    else:
-        # OtaType: major 1 is Telink; major 3 except 3.04 is FRK V1.
-        sound = state(
-            None if hw is None else hw // 10000 in (1, 3) and hw // 100 != 304,
-            None if fw is None or hw is None else fw >= (10601 if hw // 10000 == 1 else 10702),
-        )
-        if sound is CapabilityState.UNSUPPORTED and None in pact:
-            sound = CapabilityState.EVIDENCE_GAP
+    sound = h6199_service_scenes_state(
+        *pact, getattr(identity, "fw_version", None), getattr(identity, "hw_version", None)
+    )
     return {
+        "inline_brightness": _condition_state(
+            None if None in pact else pact == (1, 1),
+            None if fw is None else fw >= 10701,
+            None if hw is None else hw >= 10001,
+            None if wifi_fw is None else wifi_fw >= 10028,
+            None if wifi_hw is None else wifi_hw >= 10001,
+        ),
         "white_balance": white_balance,
         "relative_brightness": relative,
         "blank_screen": relative,
@@ -88,6 +105,7 @@ def video_control_states(profile: ModelProfile, identity: object) -> dict[str, C
             ("capture_region", profile.supports_video_capture_region),
             ("saturation", profile.supports_video_saturation),
             ("sound_effects", profile.supports_video_sound_effects),
+            ("inline_brightness", profile.supports_video_inline_brightness),
             ("white_balance", profile.supports_white_balance),
             ("relative_brightness", profile.supports_relative_brightness),
             ("blank_screen", profile.supports_blank_screen),
@@ -131,6 +149,7 @@ def requested_video_controls(content: Any) -> frozenset[str]:
             ("capture_region", content.full_screen is not None),
             ("saturation", content.saturation is not None),
             ("sound_effects", content.sound_effects is not None or content.sound_effects_softness is not None),
+            ("inline_brightness", content.inline_brightness is not None),
             (
                 "white_balance",
                 (content.white_balance_position is not None or content.white_balance_value is not None)

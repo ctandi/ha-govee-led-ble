@@ -229,6 +229,7 @@ export interface VideoProfileContent {
   sound_effects_softness: number | null;
   white_balance_position: number | null;
   white_balance_value?: number;
+  inline_brightness?: number;
   relative_brightness: RelativeBrightness | null;
   blank_screen: boolean | null;
   black_border?: boolean;
@@ -241,6 +242,7 @@ export type VideoProfileSetting =
   | "capture_region"
   | "saturation"
   | "sound_effects"
+  | "inline_brightness"
   | "white_balance"
   | "relative_brightness"
   | "blank_screen"

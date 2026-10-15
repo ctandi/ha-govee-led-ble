@@ -30,9 +30,10 @@ to the prerelease-only Experimental policy. This does not promote its support
 status or establish compatibility for its unqualified controls.
 
 H6199 capabilities depend on the detected protocol and hardware/firmware.
-Positively identified Pact 1/1 devices expose on/off only; brightness, colour,
-effects and Effect Studio remain unavailable. Unknown Pact retains existing
-behaviour without establishing compatibility. See [protocol limits](docs/h6199-pact1.md).
+Positively identified Pact 1/1 devices select an Experimental legacy candidate
+with lighting, music, DIY, scenes, revision-gated video and original DreamView
+routes.  Unknown Pact retains existing behaviour without establishing
+compatibility.  See [candidate scope and qualification limits](docs/h6199-pact1.md).
 
 H6099 uses exact Android 7.6.01 app-derived hypotheses, not an H6199 profile
 alias. Graffiti and dependent music parameters require discovered physical IC

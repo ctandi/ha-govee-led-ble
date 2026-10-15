@@ -35,6 +35,15 @@ h6199_control_payload.py
 h6199_effect_upload.py
 h6199_status_query.py
 h6199_status_reply.py
+h6199_pact1_command_write.py
+h6199_pact1_diy_body.py
+h6199_pact1_effect_upload.py
+h6199_pact1_studio_body.py
+h6199_pact1_dreamview_frame.py
+h6199_pact1_status_query.py
+h6199_pact1_status_reply.py
+h6199_pact1_upload_frame.py
+h6199_pact1_upload_ack.py
 h6199_upload_ack_payload.py
 h6199_wifi_body.py
 h6199_wifi_provision.py

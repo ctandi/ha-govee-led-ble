@@ -8,7 +8,6 @@ from bleak.exc import BleakError
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from custom_components.ha_govee_led_ble.const import H6199_PACT1_PROFILE
 from custom_components.ha_govee_led_ble.coordinator import GoveeBLECoordinator
 from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
     build_brightness_query,
@@ -22,7 +21,7 @@ from custom_components.ha_govee_led_ble.light import GoveeBLELight
 from tests.test_h6199_capabilities import QUALIFIED
 from tests.test_h6199_capabilities import lifecycle as transition_lifecycle  # noqa: F401
 from tests.test_h6199_native_controls import frame
-from tests.test_h6199_pact1 import advertise
+from tests.test_h6199_pact1 import advertise, legacy_replies
 
 
 @pytest.fixture
@@ -39,16 +38,19 @@ def device(hass, monkeypatch):
 
 async def test_setup_rebuilds_after_narrowing_during_power_query(device):
     c, client = device
+    replies = {}
+    legacy_replies(replies)
 
     async def write(_uuid, packet, **kwargs):
-        assert packet == build_power_query(c.model)
-        advertise(c, 1)
-        c._notify_callback(None, bytearray(frame("aa0101")))
+        if packet == build_power_query(c.model) and c.pact_type != 1:
+            advertise(c, 1)
+        if packet in replies:
+            c._notify_callback(None, bytearray(replies[packet]))
 
     client.write_gatt_char.side_effect = write
     await c._async_update_data()
-    assert c.profile is H6199_PACT1_PROFILE and c.is_on and c.available
-    assert client.write_gatt_char.await_count == 2
+    assert c.profile.status_grammar == "H6199-Pact1" and c.is_on and c.available
+    assert c.brightness_pct == 50 and client.write_gatt_char.await_count > 2
     assert c._client is client and not c._lock.locked() and not c._control_arbiter.locked()
 
 
@@ -57,7 +59,7 @@ async def test_setup_transition_retry_is_bounded(device):
 
     async def write(_uuid, packet, **kwargs):
         assert packet == build_power_query(c.model)
-        advertise(c, 2 if c.profile is H6199_PACT1_PROFILE else 1)
+        advertise(c, 2 if c.profile.status_grammar == "H6199-Pact1" else 1)
         c._notify_callback(None, bytearray(frame("aa0101")))
 
     client.write_gatt_char.side_effect = write
@@ -77,12 +79,14 @@ async def test_identity_batch_rebuilds_with_real_setup(transition_lifecycle):  #
         await original(client, packet, **kwargs)
         if packet == build_hardware_query(c.model) and not changed:
             advertise(c, 1)
+            legacy_replies(replies)
             changed = True
 
     c._async_write_packet = write
     await c._async_update_data()
-    assert c.is_on and c.available and c.profile is H6199_PACT1_PROFILE
-    assert set(packets) == {build_power_query(c.model), build_hardware_query(c.model), build_firmware_query(c.model)}
+    assert c.is_on and c.available and c.profile.status_grammar == "H6199-Pact1"
+    assert {build_power_query(c.model), build_hardware_query(c.model), build_firmware_query(c.model)} <= set(packets)
+    assert frame("aaa201") in packets and c.brightness_pct == 50
     assert len(clients) == 1 and c._client is None
 
 

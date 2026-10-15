@@ -154,6 +154,7 @@ class ObservedDeviceState:
     native_mode: str | None = None
     matched_operation_id: UUID | None = None
     active_effect: ActiveEffectHint | None = None
+    effect_grammar: str | None = None
 
     def __post_init__(self) -> None:
         validate_bounded_string(
@@ -191,6 +192,13 @@ class ObservedDeviceState:
             )
         if self.active_effect is not None and self.active_effect.confidence is not self.confidence:
             raise EffectStorageError("active-effect confidence must match observation confidence")
+        if self.effect_grammar is not None:
+            validate_bounded_string(
+                self.effect_grammar,
+                "observed effect grammar",
+                maximum=MAX_IDENTIFIER_LENGTH,
+                error_type=EffectStorageError,
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -203,6 +211,7 @@ class ObservedDeviceState:
             "native_mode": self.native_mode,
             "matched_operation_id": (str(self.matched_operation_id) if self.matched_operation_id is not None else None),
             "active_effect": self.active_effect.to_dict() if self.active_effect is not None else None,
+            **({"effect_grammar": self.effect_grammar} if self.effect_grammar is not None else {}),
         }
 
     @classmethod
@@ -218,6 +227,7 @@ class ObservedDeviceState:
             mode=_required_str(raw, "mode"),
             observed_at=_required_str(raw, "observed_at"),
             confidence=confidence,
+            effect_grammar=_optional_str(raw, "effect_grammar"),
             diy_code=_optional_int(raw, "diy_code"),
             effect=_optional_str(raw, "effect"),
             native_mode=_optional_str(raw, "native_mode"),
@@ -230,7 +240,9 @@ class ObservedDeviceState:
         )
 
     def to_public_dict(self) -> dict[str, Any]:
-        return self.to_dict()
+        result = self.to_dict()
+        result.pop("effect_grammar", None)
+        return result
 
 
 class EffectDeviceCache:

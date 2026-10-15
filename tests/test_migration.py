@@ -113,7 +113,7 @@ async def test_migrate_recovers_model_from_legacy_title(hass: HomeAssistant):
     assert entry.version == 8
     assert entry.data == {CONF_MODEL: "H6199"}
     assert entry.options == {
-        CONF_EFFECT_CATEGORIES: ["video", "scenes", "effects", "reactive", "advanced"],
+        CONF_EFFECT_CATEGORIES: ["video", "scenes", "effects", "multi_layered", "reactive", "advanced"],
         CONF_PREFIX_EFFECT_NAMES: False,
         CONF_ALWAYS_INCLUDE_CUSTOM_EFFECTS: False,
     }

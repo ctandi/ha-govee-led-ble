@@ -11,11 +11,23 @@ from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.ha_govee_led_ble.const import DOMAIN, EFFECT_FAMILY_MUSIC, ReadDomain, get_profile
 from custom_components.ha_govee_led_ble.coordinator import GoveeBLECoordinator
+from custom_components.ha_govee_led_ble.coordinator_status import ParsedMode
+from custom_components.ha_govee_led_ble.effect_active_workspace import ActiveEffectWorkspace
 from custom_components.ha_govee_led_ble.effect_backend import EffectBackend
-from custom_components.ha_govee_led_ble.effect_catalogue import MODEL_EFFECT_CATALOGUES, resolve_catalogue_template
-from custom_components.ha_govee_led_ble.effect_compiler import compile_application
+from custom_components.ha_govee_led_ble.effect_catalogue import (
+    MODEL_EFFECT_CATALOGUES,
+    WORKSHOP_PROTOCOL_FIXTURES,
+    resolve_catalogue_template,
+)
+from custom_components.ha_govee_led_ble.effect_compiler import compile_application, resolve_diy_code
+from custom_components.ha_govee_led_ble.effect_contracts import CapabilityWorkflow, require_effect_route
 from custom_components.ha_govee_led_ble.effect_deployments import DeploymentPhase, ObservationConfidence
-from custom_components.ha_govee_led_ble.effect_domain import LibraryItem, MusicProfile, effect_content_to_dict
+from custom_components.ha_govee_led_ble.effect_domain import (
+    LibraryItem,
+    MusicProfile,
+    SingleEffect,
+    effect_content_to_dict,
+)
 from custom_components.ha_govee_led_ble.effect_preview import PreviewPhase, PreviewWriteDisposition
 from custom_components.ha_govee_led_ble.effect_runtime import async_apply_compiled_profile, compiled_observation
 from custom_components.ha_govee_led_ble.effect_selector import compatible_saved_effects
@@ -25,6 +37,7 @@ from custom_components.ha_govee_led_ble.effect_websocket import (
     WS_APPLY_SNAPSHOT,
     WS_DEVICE,
     WS_TEMPLATE_DEFAULT_GET,
+    _device_payload,
 )
 from custom_components.ha_govee_led_ble.effect_websocket_payloads import item_summary
 from custom_components.ha_govee_led_ble.generated_protocol_adapter import build_brightness, music_default_palette
@@ -74,6 +87,77 @@ def _device(hass):
     coordinator = GoveeBLECoordinator(hass, "AA:BB:CC:DD:EE:FF", "H6099", configuration_url="test")
     coordinator.profile = replace(coordinator.profile, physical_ic_count=60)
     return coordinator
+
+
+def test_effect_route_uses_independent_effective_grammar_without_static_fallback():
+    profile = replace(get_profile("H6199"), command_grammar="H617A")
+    assert require_effect_route("H6199", CapabilityWorkflow.NATIVE_SCENES, profile=profile) == "H6199"
+    missing = replace(profile, effect_grammar=None)
+    with pytest.raises(ValueError, match="no supported"):
+        require_effect_route("H6199", CapabilityWorkflow.NATIVE_SCENES, profile=missing)
+    restricted = replace(get_profile("H617A"), a1_diy_selector=254)
+    item = LibraryItem.new("A1", SingleEffect(0, 0, 50, ((255, 0, 0),)))
+    assert resolve_diy_code(item, model="H617A", profile=restricted) == 254
+
+
+async def test_same_sku_and_selector_cannot_reuse_another_revision_history_or_recovery(hass, monkeypatch):
+    backend = await EffectBackend.async_create(hass)
+    c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url="test")
+    c.is_on = True
+    c.color_mode = ParsedMode.SCENE
+    c._scene_code = 403
+    item = LibraryItem.new("Modern Studio", WORKSHOP_PROTOCOL_FIXTURES[0].content("H6199"))
+    await backend.library.async_create(item)
+    library_before = backend.library.snapshot()
+    compiled = compile_application(item, c.model, profile=c.profile)
+    record = replace(
+        backend.engine._new_record(
+            compiled,
+            config_entry_id="entry-a",
+            updated_at="2026-09-15T00:00:00Z",
+            operation_id=None,
+            source_item=item,
+            source_kind="snapshot",
+            profile=c.profile,
+        ),
+        phase=DeploymentPhase.CONFIRMED,
+        verification_confidence=ObservationConfidence.ACTIVATION_MATCH,
+    )
+    await backend.deployments.async_put(record, expected_version=None)
+    workspace = ActiveEffectWorkspace(
+        config_entry_id="entry-a",
+        model=c.model,
+        selector_label=item.name,
+        content=item.content,
+        origin=item.origin,
+        observable_signature="scene-code:403",
+        updated_at=record.updated_at,
+        generation=1,
+        effect_grammar=c.profile.effect_grammar,
+    )
+    backend.active_workspaces.set(workspace)
+    state = backend.engine.reconcile_current(
+        c,
+        config_entry_id="entry-a",
+        observed_at=record.updated_at,
+        refreshed=True,
+        matched_record=record,
+    )
+    assert state.matched_operation_id == record.operation_id
+    prior = c.capture_effect_control_state()
+    assert prior.effect_grammar == "H6199"
+    c.profile = replace(c.profile, effect_grammar="H6199-Pact1", advanced_diy_selector=402)
+    entry = SimpleNamespace(entry_id="entry-a", title="Legacy", runtime_data=c)
+    payload = _device_payload(hass, backend, entry)
+    assert payload["active_state"]["matched_operation_id"] is None
+    assert payload["active_state"]["active_effect"] is None and payload["active_workspace"] is None
+    assert backend.library.snapshot() == library_before
+    assert backend.deployments.get(record.operation_id).effect_grammar == "H6199"
+    assert backend.active_workspaces.get("entry-a").effect_grammar == "H6199"
+    send = AsyncMock()
+    monkeypatch.setattr(c, "send_command", send)
+    assert not await c.async_restore_effect_control_state(prior, overwritten_diy_code=None)
+    send.assert_not_awaited()
 
 
 @pytest.mark.parametrize("kind", ["paint", "music"])

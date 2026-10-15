@@ -136,7 +136,10 @@ async def test_border_only_gate_and_physical_recheck(version, state) -> None:
     device = coordinator(version)
     states = video_control_states(device.profile, device)
     assert states["black_border"] == state
-    assert all(value == "supported" for key, value in states.items() if key != "black_border")
+    assert states["inline_brightness"] == "unsupported"
+    assert all(
+        value == "supported" for key, value in states.items() if key not in {"black_border", "inline_brightness"}
+    )
     validate_video_request(device, content())
     compiled = compile_video_profile(LibraryItem.new("Video only", content()), "H6099")
     writer = AsyncMock()

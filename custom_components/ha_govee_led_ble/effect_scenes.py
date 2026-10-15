@@ -243,9 +243,13 @@ async def async_apply_scene(
         speed_index=speed_index,
     )
 
-    require_effect_route(coordinator.model, CapabilityWorkflow.NATIVE_SCENES)
+    require_effect_route(coordinator.model, CapabilityWorkflow.NATIVE_SCENES, profile=coordinator.profile)
     build_native_scene_packets(
-        coordinator.model, resolved.entry, speed_index=resolved_speed, canonical_body=canonical_body or None
+        coordinator.model,
+        resolved.entry,
+        speed_index=resolved_speed,
+        canonical_body=canonical_body or None,
+        profile=coordinator.profile,
     )
     if before_apply is not None:
         await before_apply()

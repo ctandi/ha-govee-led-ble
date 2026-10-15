@@ -267,6 +267,7 @@ class VideoProfile:
     blank_screen_detection: int | None = None
     blank_screen_low_brightness_duration_seconds: int | None = None
     blank_screen_same_tone_duration_seconds: int | None = None
+    inline_brightness: int | None = None
 
     def __post_init__(self) -> None:
         _validate_identifier(self.model, "model")
@@ -281,6 +282,7 @@ class VideoProfile:
             (self.saturation, "saturation", profile.supports_video_saturation),
             (self.sound_effects, "sound_effects", profile.supports_video_sound_effects),
             (self.sound_effects_softness, "sound_effects_softness", profile.supports_video_sound_effects),
+            (self.inline_brightness, "inline_brightness", profile.supports_video_inline_brightness),
             (self.white_balance_position, "white_balance_position", profile.supports_white_balance),
             (self.white_balance_value, "white_balance_value", profile.supports_white_balance),
             (self.relative_brightness, "relative_brightness", profile.supports_relative_brightness),
@@ -296,6 +298,8 @@ class VideoProfile:
             _validate_bool(self.sound_effects, "sound_effects")
         if self.sound_effects_softness is not None:
             _validate_range(self.sound_effects_softness, "sound_effects_softness", minimum=1, maximum=100)
+        if self.inline_brightness is not None:
+            _validate_range(self.inline_brightness, "inline_brightness", minimum=1, maximum=100)
         if self.white_balance_position is not None:
             if profile.video_white_balance_representation != "position":
                 raise EffectValidationError("white_balance_position requires position calibration")
@@ -813,6 +817,7 @@ def _content_to_dict(content: EffectContent) -> dict[str, JsonValue]:
             "sound_effects": content.sound_effects,
             "sound_effects_softness": content.sound_effects_softness,
             "white_balance_position": content.white_balance_position,
+            **({"inline_brightness": content.inline_brightness} if content.inline_brightness is not None else {}),
             **({"white_balance_value": content.white_balance_value} if content.white_balance_value is not None else {}),
             "relative_brightness": (
                 None
@@ -948,6 +953,7 @@ def _content_from_dict(raw: Mapping[str, Any]) -> EffectContent:
             sound_effects_softness=_optional_int(raw, "sound_effects_softness"),
             white_balance_position=_optional_int(raw, "white_balance_position"),
             white_balance_value=_optional_int(raw, "white_balance_value"),
+            inline_brightness=_optional_int(raw, "inline_brightness"),
             relative_brightness=_optional_relative_brightness(raw, "relative_brightness"),
             blank_screen=_optional_bool(raw, "blank_screen"),
             black_border=_optional_bool(raw, "black_border"),

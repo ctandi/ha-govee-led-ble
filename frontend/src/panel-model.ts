@@ -546,6 +546,7 @@ export class PanelModel {
           capture_region: this.content.full_screen !== null,
           saturation: this.content.saturation !== null,
           sound_effects: this.content.sound_effects !== null || this.content.sound_effects_softness !== null,
+          inline_brightness: this.content.inline_brightness !== undefined,
           white_balance: this.content.white_balance_position !== null || this.content.white_balance_value !== undefined,
           relative_brightness: this.content.relative_brightness !== null,
           blank_screen: this.content.blank_screen !== null,

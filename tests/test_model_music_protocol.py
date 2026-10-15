@@ -1,7 +1,10 @@
 """Tests for model-specific music protocol metadata."""
 
+from dataclasses import replace
+
 import pytest
 
+from custom_components.ha_govee_led_ble.const import MODEL_PROFILES
 from custom_components.ha_govee_led_ble.music_protocol import (
     MUSIC_MODE_CODES_BY_MODEL,
     music_code_for,
@@ -84,3 +87,23 @@ def test_music_parameter_writes_are_model_specific() -> None:
     assert not any(music_mode_has_parameter_write("H6199", code) for code in _H617A_CODES.values())
     assert not music_mode_has_parameter_write("H6179", 0x00)
     assert not music_mode_has_parameter_write("H6179", 0x01)
+
+
+def test_effective_profile_selects_directional_codebooks_without_sku_fallback():
+    profile = replace(MODEL_PROFILES["H6199"], status_grammar="H6199-Pact1")
+    assert music_code_for("H6199", "energetic", profile=profile) == 5
+    assert music_slug_for("H6199", 0, direction="status", profile=profile) == "energetic"
+    assert music_slug_for("H6199", 5, direction="status", profile=profile) == "rhythm"
+    switched = replace(profile, command_grammar="H6179")
+    assert music_code_for("H6199", "mode_0", profile=switched) == 0
+    with pytest.raises(ValueError, match="does not support music mode"):
+        music_code_for("H6199", "energetic", profile=switched)
+    missing = replace(
+        profile,
+        command_grammar=None,
+        read_domains=frozenset(),
+        setup_required_read_domains=frozenset(),
+        h6199_controls=frozenset(),
+    )
+    with pytest.raises(ValueError, match="no music mode codebook"):
+        music_code_for("H6199", "rhythm", profile=missing)

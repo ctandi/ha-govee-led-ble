@@ -42,7 +42,7 @@ async def async_get_config_entry_diagnostics(
     coordinator_data = {
         "address": coordinator.address,
         "model": coordinator.model,
-        "release_capabilities": diagnostics_release_capabilities(coordinator.model),
+        "release_capabilities": diagnostics_release_capabilities(coordinator.model, profile=coordinator.profile),
         "effect_families": sorted(coordinator.effect_families),
         "effect_categories": sorted(coordinator.effect_categories),
         "prefix_effect_names": coordinator.prefix_effect_names,
@@ -104,6 +104,7 @@ async def async_get_config_entry_diagnostics(
         "segment_colors": coordinator.segment_colors,
         "segment_brightness": coordinator.segment_brightness,
         "segment_state_source": coordinator.segment_state_source,
+        "segment_brightness_source": coordinator.segment_brightness_source,
         "segment_state_observed_at": coordinator.segment_state_observed_at,
         "color_temp_kelvin": coordinator.color_temp_kelvin,
         "effect": coordinator.effect,

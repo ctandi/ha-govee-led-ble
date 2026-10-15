@@ -34,6 +34,7 @@ class GoveeEncryptionSession:
         self.ready = False
         self.last_result = "not_selected"
         self.marker_hex: str | None = None
+        self.marker_length: int | None = None
         self.marker_error: str | None = None
         self.rejected_frames = 0
         self._handshake: asyncio.Future[Any] | None = None
@@ -67,6 +68,7 @@ class GoveeEncryptionSession:
         generation = self._generation
         self.version = 0
         self.marker_hex = self.marker_error = None
+        self.marker_length = None
         if advertised and not self.required_version:
             self.required_version = 1
         try:
@@ -84,17 +86,20 @@ class GoveeEncryptionSession:
                     if not isinstance(data, (bytes, bytearray)):
                         raise GoveeCryptoError("invalid_marker")
                     raw_marker = bytes(data)
+                    self.marker_length = len(raw_marker)
                     self.marker_hex = raw_marker[:_MARKER_OBSERVATION_LIMIT].hex()
                     marker = parse_wire("Marker", raw_marker)
-                    if marker.format not in (1, 2) or marker.version not in (0, 1, 2):
+                    if not marker.is_legacy_plaintext and (
+                        marker.format not in (1, 2) or marker.version not in (0, 1, 2)
+                    ):
                         raise GoveeCryptoError("invalid_marker")
                 except asyncio.CancelledError:
                     raise
                 except Exception as err:
                     self.marker_error = type(err).__name__
                     _LOGGER.debug(
-                        "Encryption marker rejected: marker=%s error=%s",
-                        self.marker_hex,
+                        "Encryption marker rejected: length=%s error=%s",
+                        self.marker_length,
                         self.marker_error,
                     )
                     if not plaintext_evidence or advertised or self.required_version:
@@ -106,7 +111,7 @@ class GoveeEncryptionSession:
                     self.last_result = "plaintext_unrecognised_marker"
                     return
                 # Version zero permits plaintext only without positive encryption evidence.
-                self.version = marker.version or self.required_version
+                self.version = (0 if marker.is_legacy_plaintext else marker.version) or self.required_version
                 self._selection_failed = False
             if self.version:
                 self.required_version = self.version
@@ -246,5 +251,7 @@ class GoveeEncryptionSession:
             "last_result": self.last_result,
             "rejected_frames": self.rejected_frames,
             "marker_hex": self.marker_hex,
+            "marker_length": self.marker_length,
+            "required_version": self.required_version,
             "marker_error": self.marker_error,
         }

@@ -6,17 +6,111 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from custom_components.ha_govee_led_ble.const import MODEL_PROFILES, ModelProfile, ReadDomain
+from custom_components.ha_govee_led_ble.const import MODEL_PROFILES, ModelProfile, ReadDomain, device_profile
 from custom_components.ha_govee_led_ble.coordinator import GoveeBLECoordinator
 from custom_components.ha_govee_led_ble.coordinator_expectations import expectations_from_packet
 from custom_components.ha_govee_led_ble.effect_compiler import compile_video_profile
 from custom_components.ha_govee_led_ble.effect_deployments import PriorControlState
 from custom_components.ha_govee_led_ble.effect_domain import LibraryItem, VideoProfile
-from custom_components.ha_govee_led_ble.effect_runtime import async_apply_compiled_profile
-from custom_components.ha_govee_led_ble.generated_protocol_adapter import _STATUS_ROOTS, build_video_mode
+from custom_components.ha_govee_led_ble.effect_runtime import async_apply_compiled_profile, compiled_observation
+from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
+    _STATUS_ROOTS,
+    build_video_mode,
+)
 from custom_components.ha_govee_led_ble.light import GoveeBLELight
 from custom_components.ha_govee_led_ble.native_profile_controls import apply_active_video_mode, prepare_video_mode
+from custom_components.ha_govee_led_ble.video_applicability import video_control_states
 from tests.test_h6099 import frame
+
+
+@pytest.fixture
+def legacy_device(hass, monkeypatch):
+    c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url="test")
+    c.profile = device_profile("H6199", 1, 1, firmware="1.07.02", hardware="1.00.01")
+    c.pact_type, c.pact_code = 1, 1
+    c.fw_version, c.hw_version = "1.07.02", "1.00.01"
+    c.subordinate_20_version, c.subordinate_21_version = "1.00.01", "1.00.28"
+    c._client = MagicMock(is_connected=True, write_gatt_char=AsyncMock())
+    monkeypatch.setattr(c, "_ensure_connected", AsyncMock(return_value=c._client))
+    monkeypatch.setattr(c, "_renew_foreground_lease", MagicMock())
+    monkeypatch.setattr(c, "refresh_state", AsyncMock(return_value=True))
+    c._notify_callback(None, bytearray(frame("aa0500010032003237")))
+    c.is_on = True
+    return c
+
+
+async def test_legacy_inline_video_roundtrip_partial_write_and_compiled_authoring(legacy_device):
+    c = legacy_device
+    assert c.video_parameters == {"inline_brightness": 55}
+    prior = c.capture_effect_control_state()
+    assert PriorControlState.from_dict(prior.to_dict()) == prior
+    assert video_control_states(c.profile, c)["inline_brightness"] == "supported"
+
+    async def reply(_uuid, packet, **kwargs):
+        if packet[:3] == bytes.fromhex("330500"):
+            c._notify_callback(None, bytearray(frame("aa" + packet[1:-1].hex())))
+
+    c._client.write_gatt_char.side_effect = reply
+    await apply_active_video_mode(c, mode="game", requested_values={"saturation": 40}, verify=False)
+    assert c._client.write_gatt_char.call_args.args[1] == frame("330500010128003237")
+    assert c.video_parameters == {"inline_brightness": 55} and c.video_saturation == 40
+    item = LibraryItem.new(
+        "Legacy video",
+        VideoProfile(
+            "H6199",
+            "movie",
+            True,
+            50,
+            False,
+            50,
+            None,
+            None,
+            None,
+            inline_brightness=72,
+        ),
+    )
+    compiled = compile_video_profile(item, c.model, profile=c.profile)
+    assert compiled.inline_brightness == 72
+    await async_apply_compiled_profile(c, compiled, verify=False)
+    assert c.video_parameters == {"inline_brightness": 72}
+    assert compiled_observation(compiled, profile=c.profile)[0]["video_parameters"] == c.video_parameters
+    assert await c.async_restore_effect_control_state(prior, overwritten_diy_code=None)
+    assert c.video_parameters == {"inline_brightness": 55}
+
+
+@pytest.mark.parametrize("sound,softness", [(2, 50), (0, 0), (1, 101), (2, 255)])
+async def test_invalid_video_sound_readback_cannot_change_partial_write(legacy_device, sound, softness):
+    c = legacy_device
+    before = c.capture_effect_control_state()
+    revisions = dict(c._field_revisions)
+    c._notify_callback(None, bytearray(frame(f"aa0500010032{sound:02x}{softness:02x}37")))
+    assert c.packet_log[-1]["outcome"] == "rejected"
+    assert c.capture_effect_control_state() == before
+    assert c._field_revisions == revisions
+
+    await apply_active_video_mode(c, mode="game", requested_values={"saturation": 40}, verify=False)
+    assert c._client.write_gatt_char.call_args.args[1] == frame("330500010128003237")
+    assert c.video_sound_effects is False and c.video_sound_effects_softness == 50
+
+
+async def test_legacy_missing_companion_or_revoked_inline_identity_precedes_writes(legacy_device):
+    c = legacy_device
+    c.video_parameters = None
+    c.is_on = False
+    with pytest.raises(ValueError, match="requires its inline brightness companion"):
+        await apply_active_video_mode(c, mode="game", requested_values={}, verify=False)
+    c._client.write_gatt_char.assert_not_awaited()
+    assert not c.is_on
+    c.subordinate_21_version = None
+    with pytest.raises(ValueError, match="inline_brightness is evidence_gap"):
+        await apply_active_video_mode(
+            c,
+            mode="game",
+            requested_values={},
+            parameters={"inline_brightness": 50},
+            verify=False,
+        )
+    c._client.write_gatt_char.assert_not_awaited()
 
 
 @pytest.fixture

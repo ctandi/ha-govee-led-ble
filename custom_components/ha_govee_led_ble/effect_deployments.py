@@ -13,7 +13,7 @@ from uuid import UUID
 
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, MODEL_PROFILES
+from .const import DOMAIN, MODEL_PROFILES, ModelProfile, get_profile
 from .effect_domain import LibraryItem, SourceKind, effect_content_from_dict, effect_content_hash
 from .effect_limits import (
     MAX_DEPLOYMENT_RECORDS,
@@ -81,6 +81,12 @@ class ObservationConfidence(StrEnum):
     UNKNOWN = "unknown"
 
 
+def effect_grammar_matches(model: str, retained: str | None, profile: ModelProfile) -> bool:
+    # Untagged data belongs to the base SKU grammar, never an inferred revision.
+    grammar = get_profile(model).effect_grammar if retained is None else retained
+    return grammar == profile.effect_grammar
+
+
 @dataclass(frozen=True, slots=True)
 class PriorControlState:
     mode: str
@@ -139,6 +145,7 @@ class PriorControlState:
     segment_colors: tuple[tuple[int, int, int], ...] | None = None
     segment_brightness: tuple[int, ...] | None = None
     music_body: bytes | None = None
+    effect_grammar: str | None = None
 
     def __post_init__(self) -> None:
         if self.static_gradual is not None and type(self.static_gradual) is not bool:
@@ -169,14 +176,19 @@ class PriorControlState:
         if self.segment_colors is not None or self.segment_brightness is not None:
             if (
                 not isinstance(self.segment_colors, tuple)
-                or not isinstance(self.segment_brightness, tuple)
                 or not 1 <= len(self.segment_colors) <= 16
-                or len(self.segment_colors) != len(self.segment_brightness)
+                or self.segment_brightness is not None
+                and (
+                    not isinstance(self.segment_brightness, tuple)
+                    or len(self.segment_colors) != len(self.segment_brightness)
+                )
             ):
                 raise EffectStorageError("prior segment layout must contain matching 1 to 16 element tuples")
             for rgb in self.segment_colors:
                 _validate_rgb(rgb, "prior segment colour")
-            if any(type(value) is not int or not 0 <= value <= 100 for value in self.segment_brightness):
+            if self.segment_brightness is not None and any(
+                type(value) is not int or not 0 <= value <= 100 for value in self.segment_brightness
+            ):
                 raise EffectStorageError("prior segment brightness must be from 0 to 100")
         if self.music_palette is not None:
             if not isinstance(self.music_palette, tuple) or not 1 <= len(self.music_palette) <= 8:
@@ -207,6 +219,7 @@ class PriorControlState:
                     "capture_region",
                     "saturation",
                     "sound_effects",
+                    "inline_brightness",
                     "white_balance",
                     "relative_brightness",
                     "blank_screen",
@@ -239,6 +252,7 @@ class PriorControlState:
         ):
             raise EffectStorageError("prior colour temperature must be from 1000 to 10000")
         for value, name in (
+            (self.effect_grammar, "prior effect grammar"),
             (self.music_model, "prior music model"),
             (self.effect, "prior effect"),
             (self.music_mode, "prior music mode"),
@@ -351,6 +365,7 @@ class PriorControlState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
+            **({"effect_grammar": self.effect_grammar} if self.effect_grammar is not None else {}),
             **(
                 {"video_restore_controls": list(self.video_restore_controls)}
                 if self.video_restore_controls is not None
@@ -364,9 +379,13 @@ class PriorControlState:
             **(
                 {
                     "segment_colors": [list(rgb) for rgb in self.segment_colors],
-                    "segment_brightness": list(self.segment_brightness),
+                    **(
+                        {"segment_brightness": list(self.segment_brightness)}
+                        if self.segment_brightness is not None
+                        else {}
+                    ),
                 }
-                if self.segment_colors is not None and self.segment_brightness is not None
+                if self.segment_colors is not None
                 else {}
             ),
             "effect": self.effect,
@@ -434,10 +453,12 @@ class PriorControlState:
         segment_colors = raw.get("segment_colors")
         segment_brightness = raw.get("segment_brightness")
         if segment_colors is not None or segment_brightness is not None:
-            if not isinstance(segment_colors, list) or not isinstance(segment_brightness, list):
+            if not isinstance(segment_colors, list) or (
+                segment_brightness is not None and not isinstance(segment_brightness, list)
+            ):
                 raise EffectStorageError("invalid prior segment layout")
             segment_colors = tuple(_required_rgb({"rgb": rgb}, "rgb") for rgb in segment_colors)
-            segment_brightness = tuple(segment_brightness)
+            segment_brightness = tuple(segment_brightness) if segment_brightness is not None else None
         palette = raw.get("music_palette")
         if palette is not None:
             if not isinstance(palette, list) or not 1 <= len(palette) <= 8:
@@ -472,6 +493,7 @@ class PriorControlState:
             static_gradual=_optional_bool(raw, "static_gradual"),
             segment_colors=segment_colors,
             segment_brightness=segment_brightness,
+            effect_grammar=_optional_str(raw, "effect_grammar"),
             effect=_optional_str(raw, "effect"),
             scene_code=_optional_int(raw, "scene_code"),
             diy_code=_optional_int(raw, "diy_code"),
@@ -568,10 +590,12 @@ class DeploymentRecord:
     prior_state: PriorControlState | None = None
     target_model: str | None = None
     observable_signature: str | None = None
+    effect_grammar: str | None = None
 
     def __post_init__(self) -> None:
         for value, name in (
             (self.target_model, "deployment target model"),
+            (self.effect_grammar, "deployment effect grammar"),
             (self.observable_signature, "deployment observable signature"),
         ):
             if value is not None:
@@ -700,6 +724,7 @@ class DeploymentRecord:
             "verification_confidence": self.verification_confidence.value,
             "prior_state": self.prior_state.to_dict() if self.prior_state is not None else None,
             "target_model": self.target_model,
+            **({"effect_grammar": self.effect_grammar} if self.effect_grammar is not None else {}),
             "observable_signature": self.observable_signature,
         }
 
@@ -755,6 +780,7 @@ class DeploymentRecord:
             target_mode=_optional_str(raw, "target_mode") or "custom",
             target_effect=_optional_str(raw, "target_effect"),
             target_model=_optional_str(raw, "target_model"),
+            effect_grammar=_optional_str(raw, "effect_grammar"),
             observable_signature=_optional_str(raw, "observable_signature"),
             evidence_codes=_string_tuple(raw.get("evidence_codes", ()), "deployment evidence codes"),
             source_kind=_optional_str(raw, "source_kind") or "saved_effect",

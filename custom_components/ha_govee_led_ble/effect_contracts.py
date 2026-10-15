@@ -6,7 +6,14 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Final
 
-from .const import ModelProfile, default_effect_categories, get_profile, supported_effect_categories
+from .const import (
+    ModelProfile,
+    SupportQuality,
+    default_effect_categories,
+    effect_category_for_content_kind,
+    get_profile,
+    supported_effect_categories,
+)
 from .effect_domain import EFFECT_SCHEMA_VERSION, JsonValue
 from .effect_limits import (
     MAX_DEPLOYMENT_RECORDS,
@@ -18,8 +25,8 @@ from .effect_limits import (
     MAX_SCENE_CATALOGUE_ENTRIES,
 )
 
-EDITOR_API_VERSION: Final = 15
-EDITOR_ASSET_VERSION: Final = 21
+EDITOR_API_VERSION: Final = 16
+EDITOR_ASSET_VERSION: Final = 22
 EFFECT_COMPILER_VERSION: Final = 5
 RELEASE_CAPABILITY_SCHEMA_VERSION: Final = 1
 
@@ -68,6 +75,7 @@ class CompilerDeployerStrategy(StrEnum):
     RAW_PRESERVATION = "raw_preservation"
     A3_EFFECT_UPLOAD = "a3_effect_upload"
     H6179_A1_EFFECT_UPLOAD = "h6179_a1_effect_upload"
+    A1_EFFECT_UPLOAD = "a1_effect_upload"
 
 
 class VerificationConfidence(StrEnum):
@@ -549,26 +557,72 @@ RELEASE_CAPABILITY_CONTRACT: Final = (
 )
 
 
-def release_capabilities_for_model(model: str) -> tuple[ReleaseCapability, ...]:
-    return tuple(capability for capability in RELEASE_CAPABILITY_CONTRACT if capability.model == model)
+def release_capabilities_for_model(model: str, *, profile: ModelProfile | None = None) -> tuple[ReleaseCapability, ...]:
+    capabilities = tuple(capability for capability in RELEASE_CAPABILITY_CONTRACT if capability.model == model)
+    if model != "H6199" or profile is None or profile.effect_grammar != "H6199-Pact1":
+        return capabilities
+    categories = supported_effect_categories(model, profile=profile)
+    effective = []
+    for capability in capabilities:
+        enabled = (
+            capability.workflow is not CapabilityWorkflow.PALETTE_DIY
+            and effect_category_for_content_kind(capability.persistent_content_kind) in categories
+        )
+        effective.append(
+            replace(
+                capability,
+                application_route=capability.application_route if enabled else ApplicationRoute.NONE,
+                frontend_visibility=capability.frontend_visibility if enabled else FrontendVisibility.HIDDEN,
+                physical_validation_state=PhysicalValidationState.NOT_VALIDATED,
+                verification_confidence=VerificationConfidence.SELECTION_ONLY,
+                diagnostics_evidence_classification=EvidenceClassification.STRUCTURAL,
+            )
+        )
+    return (
+        *effective,
+        *(
+            ReleaseCapability(
+                model,
+                workflow,
+                label,
+                FrontendVisibility.VISIBLE if profile.supports_custom_effects else FrontendVisibility.HIDDEN,
+                kind,
+                ApplicationRoute.STUDIO_CUSTOM_APPLY if profile.supports_custom_effects else ApplicationRoute.NONE,
+                CompilerDeployerStrategy.A1_EFFECT_UPLOAD,
+                VerificationConfidence.SELECTION_ONLY,
+                PhysicalValidationState.NOT_VALIDATED,
+                EvidenceClassification.STRUCTURAL,
+            )
+            for workflow, label, kind in (
+                (CapabilityWorkflow.SINGLE, "Basic", "h617a_single"),
+                (CapabilityWorkflow.MULTI, "Mixed", "h617a_multi"),
+            )
+        ),
+    )
 
 
-def release_capability(model: str, workflow: CapabilityWorkflow) -> ReleaseCapability | None:
+def release_capability(
+    model: str, workflow: CapabilityWorkflow, *, profile: ModelProfile | None = None
+) -> ReleaseCapability | None:
     return next(
         (
             capability
-            for capability in RELEASE_CAPABILITY_CONTRACT
-            if capability.model == model and capability.workflow is workflow
+            for capability in release_capabilities_for_model(model, profile=profile)
+            if capability.workflow is workflow
         ),
         None,
     )
 
 
 def require_effect_route(
-    model: str, workflow: CapabilityWorkflow, grammars: tuple[str, ...] = ("H617A", "H6199", "H6099", "H6179")
+    model: str,
+    workflow: CapabilityWorkflow,
+    grammars: tuple[str, ...] = ("H617A", "H6199", "H6099", "H6179", "H6199-Pact1"),
+    *,
+    profile: ModelProfile | None = None,
 ) -> str:
-    """Require exact-model workflow authorization and matching effect/command grammar."""
-    capability = release_capability(model, workflow)
+    """Require exact-model workflow authorisation and the effective effect grammar."""
+    capability = release_capability(model, workflow, profile=profile)
     label = "Workshop" if workflow is CapabilityWorkflow.WORKSHOP else workflow.value
     if capability is None or capability.application_route not in {
         ApplicationRoute.STUDIO_SCENE_APPLY
@@ -577,34 +631,40 @@ def require_effect_route(
         ApplicationRoute.HOME_ASSISTANT_CONTROL,
     }:
         raise ValueError(f"{model} {label} application is not supported")
-    profile = get_profile(model)
-    if (
-        profile.effect_grammar is None
-        or profile.effect_grammar not in grammars
-        or profile.command_grammar != profile.effect_grammar
-    ):
+    profile = profile or get_profile(model)
+    if profile.effect_grammar is None or profile.effect_grammar not in grammars or profile.command_grammar is None:
         raise ValueError(f"{model} has no supported {label} grammar and activation route")
+    from .generated_protocol_adapter import build_scene_activation
+
+    try:
+        build_scene_activation(model, 0, profile=profile)
+    except ValueError as error:
+        raise ValueError(f"{model} has no supported {label} grammar and activation route") from error
     return profile.effect_grammar
 
 
-def frontend_release_capabilities(model: str) -> list[JsonValue]:
+def frontend_release_capabilities(model: str, *, profile: ModelProfile | None = None) -> list[JsonValue]:
     return [
         capability.to_frontend_dict()
-        for capability in release_capabilities_for_model(model)
+        for capability in release_capabilities_for_model(model, profile=profile)
         if capability.frontend_visibility is FrontendVisibility.VISIBLE
     ]
 
 
-def diagnostics_release_capabilities(model: str) -> dict[str, JsonValue]:
+def diagnostics_release_capabilities(model: str, *, profile: ModelProfile | None = None) -> dict[str, JsonValue]:
     return {
         "schema_version": RELEASE_CAPABILITY_SCHEMA_VERSION,
         "model": model,
-        "capabilities": [capability.to_diagnostics_dict() for capability in release_capabilities_for_model(model)],
+        "capabilities": [
+            capability.to_diagnostics_dict() for capability in release_capabilities_for_model(model, profile=profile)
+        ],
     }
 
 
-def workflow_capability_state(model: str, workflow: CapabilityWorkflow) -> CapabilityState:
-    capability = release_capability(model, workflow)
+def workflow_capability_state(
+    model: str, workflow: CapabilityWorkflow, *, profile: ModelProfile | None = None
+) -> CapabilityState:
+    capability = release_capability(model, workflow, profile=profile)
     if capability is None or capability.frontend_visibility is not FrontendVisibility.VISIBLE:
         return CapabilityState.UNSUPPORTED
     if (
@@ -615,8 +675,10 @@ def workflow_capability_state(model: str, workflow: CapabilityWorkflow) -> Capab
     return CapabilityState.SUPPORTED
 
 
-def studio_apply_capability_state(model: str, workflow: CapabilityWorkflow) -> CapabilityState:
-    capability = release_capability(model, workflow)
+def studio_apply_capability_state(
+    model: str, workflow: CapabilityWorkflow, *, profile: ModelProfile | None = None
+) -> CapabilityState:
+    capability = release_capability(model, workflow, profile=profile)
     if capability is None or capability.application_route not in {
         ApplicationRoute.STUDIO_CUSTOM_APPLY,
         ApplicationRoute.HOME_ASSISTANT_CONTROL,
@@ -666,13 +728,14 @@ class DeviceEffectCapabilities:
     readback: str
     effect_categories: tuple[str, ...]
     physical_ic_count: int | None = None
+    support_quality: SupportQuality | None = None
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
             "config_entry_id": self.config_entry_id,
             "light_entity_id": self.light_entity_id,
             "model": self.model,
-            "support_quality": get_profile(self.model).support_quality.value,
+            "support_quality": (self.support_quality or get_profile(self.model).support_quality).value,
             "display_name": self.display_name,
             "segment_count": self.segment_count,
             "physical_ic_count": self.physical_ic_count,
@@ -712,28 +775,29 @@ def device_effect_capabilities(
         display_name=display_name,
         segment_count=segment_count,
         physical_ic_count=physical_ic_count,
-        painted=studio_apply_capability_state(model, CapabilityWorkflow.PAINTED)
+        support_quality=profile.support_quality,
+        painted=studio_apply_capability_state(model, CapabilityWorkflow.PAINTED, profile=profile)
         if profile.supports_custom_effects
         else CapabilityState.UNSUPPORTED,
-        single=studio_apply_capability_state(model, CapabilityWorkflow.SINGLE)
+        single=studio_apply_capability_state(model, CapabilityWorkflow.SINGLE, profile=profile)
         if profile.supports_custom_effects
         else CapabilityState.UNSUPPORTED,
-        multi=studio_apply_capability_state(model, CapabilityWorkflow.MULTI)
+        multi=studio_apply_capability_state(model, CapabilityWorkflow.MULTI, profile=profile)
         if profile.supports_custom_effects
         else CapabilityState.UNSUPPORTED,
-        palette_diy=studio_apply_capability_state(model, CapabilityWorkflow.PALETTE_DIY)
+        palette_diy=studio_apply_capability_state(model, CapabilityWorkflow.PALETTE_DIY, profile=profile)
         if profile.supports_custom_effects
         else CapabilityState.UNSUPPORTED,
-        advanced=workflow_capability_state(model, CapabilityWorkflow.ADVANCED)
+        advanced=workflow_capability_state(model, CapabilityWorkflow.ADVANCED, profile=profile)
         if profile.supports_advanced_effects
         else CapabilityState.UNSUPPORTED,
-        music=studio_apply_capability_state(model, CapabilityWorkflow.NATIVE_MUSIC)
+        music=studio_apply_capability_state(model, CapabilityWorkflow.NATIVE_MUSIC, profile=profile)
         if profile.supports_music_mode
         else CapabilityState.UNSUPPORTED,
-        video=studio_apply_capability_state(model, CapabilityWorkflow.VIDEO)
+        video=studio_apply_capability_state(model, CapabilityWorkflow.VIDEO, profile=profile)
         if profile.supports_video_mode
         else CapabilityState.UNSUPPORTED,
-        workshop=studio_apply_capability_state(model, CapabilityWorkflow.WORKSHOP)
+        workshop=studio_apply_capability_state(model, CapabilityWorkflow.WORKSHOP, profile=profile)
         if profile.supports_advanced_effects
         else CapabilityState.UNSUPPORTED,
         readback=profile.effect_readback,

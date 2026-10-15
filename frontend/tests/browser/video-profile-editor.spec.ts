@@ -12,6 +12,19 @@ test("video editor shows only declared model settings", async ({ page }) => {
   await expect(page.getByText("White balance")).toHaveCount(0);
 });
 
+test("legacy inline brightness edits independently and can be left unchanged", async ({page}) => {
+  await page.goto("/tests/browser/fixtures/video-profile-editor.html?legacy");
+  const brightness = page.getByLabel("Video brightness", {exact: true});
+  await expect(brightness).toHaveAttribute("min", "1");
+  await expect(brightness).toHaveAttribute("max", "100");
+  await expect(brightness).toHaveValue("50");
+  await brightness.fill("75");
+  await expect(brightness).toHaveValue("75");
+  await page.getByLabel("Include inline brightness", {exact: true}).uncheck();
+  await expect(brightness).toHaveCount(0);
+  await expect(page.getByLabel("Saturation", {exact: true})).toHaveValue("50");
+});
+
 test("scalar calibration and six ordered brightness zones stay editable", async ({ page }) => {
   await page.goto("/tests/browser/fixtures/video-profile-editor.html?alternate");
   const balance = page.getByLabel("White balance", {exact: true});

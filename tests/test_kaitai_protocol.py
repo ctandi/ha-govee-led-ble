@@ -49,6 +49,10 @@ StatusReply = _generated("status_reply", "StatusReply")
 StatusQuery = _generated("status_query", "StatusQuery")
 H6199StatusQuery = _generated("h6199_status_query", "H6199StatusQuery")
 H6199StatusReply = _generated("h6199_status_reply", "H6199StatusReply")
+H6199Pact1CommandWrite = _generated("h6199_pact1_command_write", "H6199Pact1CommandWrite")
+H6199Pact1DiyBody = _generated("h6199_pact1_diy_body", "H6199Pact1DiyBody")
+H6199Pact1StatusQuery = _generated("h6199_pact1_status_query", "H6199Pact1StatusQuery")
+H6199Pact1StatusReply = _generated("h6199_pact1_status_reply", "H6199Pact1StatusReply")
 H6199CommandAck = _generated("h6199_command_ack", "H6199CommandAck")
 H6179CommandWrite = _generated("h6179_command_write", "H6179CommandWrite")
 H6179DiyBody = _generated("h6179_diy_body", "H6179DiyBody")
@@ -122,6 +126,185 @@ def _parse(root_type: type[Any], data: bytes) -> Any:
     parsed._read()
     assert stream.pos() == len(data)
     return parsed
+
+
+@pytest.mark.parametrize("header, root_type", [(0x33, H6199Pact1CommandWrite), (0xAA, H6199Pact1StatusReply)])
+@pytest.mark.parametrize(
+    "payload, slug, calm, colour",
+    [
+        ("0c0032", "energetic", None, None),
+        ("0c05320101123456", "rhythm", 1, (0x12, 0x34, 0x56)),
+        ("0c033201123456", "spectrum", None, (0x12, 0x34, 0x56)),
+        ("0c023200", "rolling", None, None),
+    ],
+)
+def test_h6199_pact1_synthetic_music_layouts(header, root_type, payload, slug, calm, colour):
+    """Producer-derived fixtures, not owner captures or control qualification."""
+    body = (bytes((header, 5)) + bytes.fromhex(payload)).ljust(19, b"\0")
+    packet = body + bytes((xor_checksum(body),))
+    parsed = _parse(root_type, packet)
+    detail = parsed.body.detail
+    assert detail.mode.name == slug and detail.sensitivity == 50
+    assert getattr(detail, "is_calm", None) == calm
+    if colour is None:
+        assert not hasattr(detail, "fixed_colour")
+        if slug == "energetic":
+            assert not hasattr(detail, "has_fixed_colour")
+        else:
+            assert detail.has_fixed_colour == 0
+    else:
+        assert (detail.fixed_colour.red, detail.fixed_colour.green, detail.fixed_colour.blue) == colour
+        assert detail.has_fixed_colour == 1
+    parsed._check()
+    output = KaitaiStream(io.BytesIO(bytearray(len(packet))))
+    parsed._write(output)
+    assert output.to_byte_array() == packet
+
+
+def test_h6199_pact1_synthetic_static_write_is_not_static_readback():
+    body = bytes.fromhex("33050b1234560fa0ff7f").ljust(19, b"\0")
+    parsed = _parse(H6199Pact1CommandWrite, body + bytes((xor_checksum(body),)))
+    detail = parsed.body.detail
+    assert (detail.rgb.red, detail.rgb.green, detail.rgb.blue) == (0x12, 0x34, 0x56)
+    assert detail.kelvin == 4000 and detail.segment_mask == 0x7FFF
+    reply_body = bytes.fromhex("aa050b") + bytes(range(16))
+    reply = _parse(H6199Pact1StatusReply, reply_body + bytes((xor_checksum(reply_body),)))
+    assert reply.body.mode.name == "static_colour"
+    assert reply.body.detail.gradient == 0
+    assert reply.body.detail.kelvin_candidate == 258
+    assert reply.body.detail.unknown_tail == bytes(range(3, 16))
+    assert not hasattr(reply.body.detail, "rgb") and not hasattr(reply.body.detail, "kelvin")
+
+
+@pytest.mark.parametrize("group", [1, 4])
+def test_h6199_pact1_synthetic_rgb_pages_have_no_brightness(group):
+    body = bytes((0xAA, 0xA2, group)) + bytes(range(16))
+    packet = body + bytes((xor_checksum(body),))
+    parsed = _parse(H6199Pact1StatusReply, packet)
+    count = 3 if group == 4 else 4
+    assert len(parsed.body.segments) == count
+    colour = parsed.body.segments[0].colour
+    assert (colour.red, colour.green, colour.blue) == (0, 1, 2)
+    assert all(not hasattr(record, "brightness") for record in parsed.body.segments)
+    assert parsed.body.unknown_tail == bytes(range(count * 3, 16))
+    parsed._check()
+    output = KaitaiStream(io.BytesIO(bytearray(len(packet))))
+    parsed._write(output)
+    assert output.to_byte_array() == packet
+    query_body = bytes((0xAA, 0xA2, group)) + bytes(16)
+    query = _parse(H6199Pact1StatusQuery, query_body + bytes((xor_checksum(query_body),)))
+    assert query.domain.name == "segments" and query.body.group == group
+
+
+@pytest.mark.parametrize("raw", [20, 137, 254])
+def test_h6199_pact1_synthetic_brightness_is_a_register(raw):
+    body = bytes((0xAA, 4, raw)) + bytes(16)
+    parsed = _parse(H6199Pact1StatusReply, body + bytes((xor_checksum(body),)))
+    assert parsed.body.register == raw and not hasattr(parsed.body, "percent")
+
+
+@pytest.mark.parametrize(
+    "body,family,pairs",
+    [
+        ("fe00013206ff00000000ff00", 0, []),
+        ("feff0032031234560400000201", 255, [(0, 0), (2, 1)]),
+    ],
+)
+def test_h6199_pact1_diy_includes_zero_or_populated_mix_length(body, family, pairs):
+    data = bytes.fromhex(body)
+    parsed = _parse(H6199Pact1DiyBody, data)
+    assert parsed.diy_code == 254 and parsed.family == family and parsed.speed == 50
+    assert parsed.len_mix == len(pairs) * 2
+    assert [(pair.family, pair.variation) for pair in parsed.mix.pairs] == pairs
+    parsed._check()
+    output = KaitaiStream(io.BytesIO(bytearray(len(data))))
+    parsed._write(output)
+    assert output.to_byte_array() == data
+
+
+@pytest.mark.parametrize("body", ["fe00013203ff0000", "fe00013202ff000000", "feff0032000100"])
+def test_h6199_pact1_diy_rejects_missing_mix_length_and_partial_records(body):
+    with pytest.raises(KaitaiStructError):
+        _parse(H6199Pact1DiyBody, bytes.fromhex(body))
+
+
+@pytest.mark.parametrize("percent,raw", [(1, 20), (50, 136), (100, 254)])
+def test_h6199_pact1_transform_preserves_logical_brightness_expectation(percent, raw):
+    packet = generated_protocol_adapter.build_brightness(percent, "H6199")
+    wire = generated_protocol_adapter.h6199_pact1_outbound_transform(packet)
+    expected = bytes((0x33, 4, raw)).ljust(19, b"\0")
+    assert wire == expected + bytes((xor_checksum(expected),))
+    assert expectations_from_packet(packet, "H6199") == {"brightness_pct": percent}
+
+
+@pytest.mark.parametrize(
+    "slug,code,style", [("energetic", 0, False), ("rhythm", 5, True), ("spectrum", 3, False), ("rolling", 2, False)]
+)
+def test_h6199_pact1_transform_and_status_share_semantics(slug, code, style):
+    from custom_components.ha_govee_led_ble.music_protocol import music_code_for
+
+    profile = replace(MODEL_PROFILES["H6199"], status_grammar="H6199-Pact1", music_sensitivity_max=99)
+    colour = None if slug == "energetic" else (18, 52, 86)
+    logical = generated_protocol_adapter.build_music_mode(
+        music_code_for("H6199", slug), 50, colour, style, "H6199", profile=profile
+    )
+    wire = generated_protocol_adapter.h6199_pact1_outbound_transform(logical)
+    assert wire[:5] == bytes((0x33, 5, 12, code, 50))
+    reply_body = bytes((0xAA,)) + wire[1:-1]
+    reply = _parse(H6199Pact1StatusReply, reply_body + bytes((xor_checksum(reply_body),)))
+    state = parse_color_mode(reply, "H6199", profile=profile)
+    assert state.music_mode == slug and state.music_sensitivity == 50
+    assert state.music_color == colour
+    assert state.music_calm == (style if slug == "rhythm" else None)
+    expected = expectations_from_packet(logical, "H6199", profile=profile)
+    assert expected["music_mode"] == slug and expected["music_color"] == colour
+
+
+@pytest.mark.parametrize("payload", ["aa050c0064", "aa050c05320200", "aa050c033202"])
+def test_h6199_pact1_invalid_music_flags_remain_rejections(payload):
+    body = bytes.fromhex(payload).ljust(19, b"\0")
+    reply = _parse(H6199Pact1StatusReply, body + bytes((xor_checksum(body),)))
+    profile = replace(MODEL_PROFILES["H6199"], status_grammar="H6199-Pact1", music_sensitivity_max=99)
+    with pytest.raises(ValueError, match="invalid legacy music"):
+        parse_color_mode(reply, "H6199", profile=profile)
+
+
+@pytest.mark.parametrize("group", [1, 4])
+def test_h6199_pact1_transform_selects_rgb_only_query(group):
+    logical = generated_protocol_adapter.build_segment_query(group, "H6199")
+    packet = generated_protocol_adapter.h6199_pact1_outbound_transform(logical)
+    parsed = _parse(H6199Pact1StatusQuery, packet)
+    assert packet[:3] == bytes((0xAA, 0xA2, group))
+    assert parsed.domain.name == "segments" and parsed.body.group == group
+
+
+def test_h6199_pact1_static_transform_removes_modern_operation_and_preview():
+    logical = generated_protocol_adapter.build_segment_colour(0x4001, 18, 52, 86, "H6199")
+    wire = generated_protocol_adapter.h6199_pact1_outbound_transform(logical)
+    expected = bytes.fromhex("33050b12345600000140").ljust(19, b"\0")
+    assert wire == expected + bytes((xor_checksum(expected),))
+
+
+def test_h6199_pact1_kelvin_transform_uses_temperature_rgb_companion():
+    logical = generated_protocol_adapter.build_colour_temperature(
+        kelvin=4000, preview=(18, 52, 86), mask=0x4001, model="H6199"
+    )
+    wire = generated_protocol_adapter.h6199_pact1_outbound_transform(logical)
+    expected = bytes.fromhex("33050b1234560fa00140").ljust(19, b"\0")
+    assert wire == expected + bytes((xor_checksum(expected),))
+    detail = _parse(H6199Pact1CommandWrite, wire).body.detail
+    assert detail.kelvin == 4000 and detail.segment_mask == 0x4001
+
+
+@pytest.mark.parametrize("header,root", [(0x33, H6199Pact1CommandWrite), (0xAA, H6199Pact1StatusReply)])
+def test_h6199_pact1_diy_activation_and_readback(header, root):
+    body = bytes((header, 5, 10, 254, 0)).ljust(19, b"\0")
+    parsed = _parse(root, body + bytes((xor_checksum(body),)))
+    assert parsed.body.detail.code == 254
+    if header == 0xAA:
+        profile = replace(MODEL_PROFILES["H6199"], status_grammar="H6199-Pact1")
+        state = parse_color_mode(parsed, "H6199", profile=profile)
+        assert state.mode is ParsedMode.DIY and state.diy_code == 254
 
 
 @pytest.mark.parametrize("selector", [0, 1])

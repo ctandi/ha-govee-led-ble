@@ -484,7 +484,7 @@ class EffectPreviewManager:
         self.ensure_session(session_id, owner)
         coordinator = self._loaded_coordinator(config_entry_id)
         try:
-            diy_code = resolve_diy_code(item, diy_code, model=coordinator.model)
+            diy_code = resolve_diy_code(item, diy_code, model=coordinator.model, profile=coordinator.profile)
             compiled = compile_application(item, coordinator.model, diy_code=diy_code, profile=coordinator.profile)
         except ValueError as exc:
             raise PreviewError(str(exc)) from exc
@@ -563,6 +563,7 @@ class EffectPreviewManager:
                 resolved.entry,
                 speed_index=resolved_speed,
                 canonical_body=canonical_body or None,
+                profile=coordinator.profile,
             )
         except ValueError as exc:
             raise PreviewError(str(exc)) from exc
@@ -959,6 +960,7 @@ class EffectPreviewManager:
                     before_write=writer.begin,
                     verify=False,
                     intent=ControlIntent.PREVIEW,
+                    **({"writer": writer} if coordinator.profile.scene_requires_upload_ack else {}),
                 )
             else:
                 assert compiled is not None
@@ -1096,10 +1098,12 @@ class EffectPreviewManager:
                     ActiveEffectWorkspace(
                         config_entry_id=request.config_entry_id,
                         model=coordinator.model,
+                        effect_grammar=coordinator.profile.effect_grammar,
                         selector_label=request.item.name,
                         content=_active_workspace_content(
                             request.item.content,
                             compiled,
+                            profile=coordinator.profile,
                         ),
                         origin=request.item.origin,
                         observable_signature=signature,

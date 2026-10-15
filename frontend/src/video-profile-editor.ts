@@ -113,6 +113,7 @@ export class GoveeVideoProfileEditor extends LitElement {
       this.settings.includes("sound_effects") &&
       this.content.sound_effects !== null &&
       this.content.sound_effects_softness !== null;
+    const inlineBrightness = this.settings.includes("inline_brightness") && this.content.inline_brightness !== undefined;
     const whiteBalance =
       this.settings.includes("white_balance") &&
       (this.content.white_balance_position !== null || this.content.white_balance_value !== undefined);
@@ -147,6 +148,7 @@ export class GoveeVideoProfileEditor extends LitElement {
             setting === "white_balance" ? whiteBalance : setting === "relative_brightness" ? relativeBrightness
               : setting === "blank_screen" ? blankScreen : setting === "capture_region" ? captureRegion
               : setting === "black_border" ? blackBorder
+              : setting === "inline_brightness" ? inlineBrightness
               : setting === "saturation" ? saturation : soundEffects,
             checked => this.updateContent(content => {
               switch (setting) {
@@ -155,6 +157,10 @@ export class GoveeVideoProfileEditor extends LitElement {
                 case "sound_effects":
                   content.sound_effects = checked ? false : null;
                   content.sound_effects_softness = checked ? 50 : null;
+                  break;
+                case "inline_brightness":
+                  if (checked) content.inline_brightness = 50;
+                  else delete content.inline_brightness;
                   break;
                 case "blank_screen":
                   content.blank_screen = checked ? false : null;
@@ -301,9 +307,13 @@ export class GoveeVideoProfileEditor extends LitElement {
           </div>
         </section>
 
-        <section class="card" ?hidden=${!saturation && !whiteBalance}>
+        <section class="card" ?hidden=${!saturation && !whiteBalance && !inlineBrightness}>
           <h3 class="section-title">Image</h3>
           <div class="parameter-stack">
+            ${inlineBrightness ? this.renderRangeField(
+              "Video brightness", this.content.inline_brightness ?? 50, 1, 100,
+              value => this.updateContent(content => { content.inline_brightness = clampInteger(value, 1, 100); }),
+            ) : nothing}
             ${saturation
               ? this.renderRangeField(
                   "Saturation",

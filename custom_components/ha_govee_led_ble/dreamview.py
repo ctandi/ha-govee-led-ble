@@ -1,4 +1,4 @@
-"""MovieFeastV2 semantics over explicitly compatible generated wire structures.
+"""DreamView semantics over explicitly selected generated wire structures.
 
 Selectively reuses issue #257's immutable member model and group framing, not
 its default cmd_ver, digest, camera assumptions or active member identification.
@@ -21,6 +21,11 @@ from .transport import A3_CHUNK_SIZE, fragment_a3, xor_checksum
 
 Frame = cast(Any, import_module(f"{__package__}.generated_protocol.h6099_dreamview_frame").H6099DreamviewFrame)
 Group = cast(Any, import_module(f"{__package__}.generated_protocol.h6099_dreamview_group").H6099DreamviewGroup)
+LegacyFrame = cast(
+    Any,
+    import_module(f"{__package__}.generated_protocol.h6199_pact1_dreamview_frame").H6199Pact1DreamviewFrame,
+)
+_FRAME_ROOTS = {"H6099": Frame, "H6199-Pact1": LegacyFrame}
 DREAMVIEW_READ_SETTINGS = tuple(command.name for command in Frame.Command if command != Frame.Command.delete_group)
 
 
@@ -29,7 +34,7 @@ def require_dreamview(
 ) -> None:
     """No related-model or camera-based capability inference."""
     operations = profile.dreamview_reads if read else profile.dreamview_operations
-    if profile.dreamview_grammar != "H6099" or operation not in operations:
+    if profile.dreamview_grammar not in _FRAME_ROOTS or operation not in operations:
         raise ValueError("DreamView operation is not supported by this profile")
     if member_count is not None and not 1 <= member_count <= profile.dreamview_max_sub_devices:
         raise ValueError("DreamView member count exceeds this profile's capacity; use explicit delete for removal")
@@ -132,9 +137,12 @@ def build_dreamview_command(setting: str, values: Mapping[str, Any], profile: Mo
     }
     if setting not in fields or values.keys() != fields[setting].keys():
         raise ValueError("Supply exactly the fields required by this DreamView setting")
-    root = Frame(False)
-    root.header, root.module, root.command = Frame.Header.write, b"\x60", Frame.Command[setting]
-    root.body = Frame.WriteBody(_parent=root, _root=root)
+    assert profile.dreamview_grammar is not None
+    root_type = _FRAME_ROOTS[profile.dreamview_grammar]
+    root = root_type(False)
+    root.header, root.command = root_type.Header.write, root_type.Command[setting]
+    root.module = bytes((root.module_value,))
+    root.body = root_type.WriteBody(_parent=root, _root=root)
     for name, bound in fields[setting].items():
         value = values[name]
         if bound is bool:
@@ -144,8 +152,9 @@ def build_dreamview_command(setting: str, values: Mapping[str, Any], profile: Mo
         else:
             value = integer(value, cast(int, bound))
         setattr(root.body, name, value)
-    root.body.discriminator = b"\x01"
-    root.body.unknown = bytes(16 - len(values) - (setting == "switch_group"))
+    if root.discriminator_size:
+        root.body.discriminator = b"\x01"
+    root.body.unknown = bytes(root.body_size - len(values) - root.discriminator_size)
     return _serialize_xor(root)
 
 
@@ -153,24 +162,39 @@ def build_dreamview_query(setting: str, profile: ModelProfile) -> bytes:
     require_dreamview(profile, setting, read=True)
     if setting not in DREAMVIEW_READ_SETTINGS:
         raise ValueError("Unsupported DreamView read")
-    root = Frame(True)
-    root.header, root.module, root.command = Frame.Header.read, b"\x60", Frame.Command[setting]
-    root.body = Frame.QueryBody(_parent=root, _root=root)
-    root.body.discriminator = b"\x01"
-    root.body.unknown = bytes(15 if setting == "switch_group" else 16)
+    assert profile.dreamview_grammar is not None
+    root_type = _FRAME_ROOTS[profile.dreamview_grammar]
+    root = root_type(True)
+    root.header, root.command = root_type.Header.read, root_type.Command[setting]
+    root.module = bytes((root.module_value,))
+    root.body = root_type.QueryBody(_parent=root, _root=root)
+    if root.discriminator_size:
+        root.body.discriminator = b"\x01"
+    root.body.unknown = bytes(root.body_size - root.discriminator_size)
     return _serialize_xor(root)
 
 
-def parse_dreamview_status(frame: bytes) -> tuple[str, dict[str, Any]] | None:
-    """Return individual observations, never a group count, identity or ACK state."""
+def parse_dreamview_frame(frame: bytes, *, grammar: str) -> Any | None:
+    """Validate a known settings envelope independently of operation authorisation."""
     if len(frame) != 20 or xor_checksum(frame[:-1]) != frame[-1]:
         return None
-    root = Frame(False, KaitaiStream(io.BytesIO(frame)))
+    root_type = _FRAME_ROOTS.get(grammar)
+    if root_type is None:
+        return None
+    root = root_type(False, KaitaiStream(io.BytesIO(frame)))
     try:
         root._read()
     except KaitaiStructError:
         return None
-    if root.header != Frame.Header.read or root.command not in Frame.Command:
+    if root.header not in root_type.Header or root.command not in root_type.Command:
+        return None
+    return root
+
+
+def parse_dreamview_status(frame: bytes, *, profile: ModelProfile | None = None) -> tuple[str, dict[str, Any]] | None:
+    """Return individual observations, never a group count, identity or ACK state."""
+    root = parse_dreamview_frame(frame, grammar="H6099" if profile is None else profile.dreamview_grammar or "")
+    if root is None or root.header != type(root).Header.read:
         return None
     setting = root.command.name
     if setting not in DREAMVIEW_READ_SETTINGS:

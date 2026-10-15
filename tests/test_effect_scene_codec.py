@@ -312,7 +312,7 @@ def test_exact_qualified_scene_routes_share_native_and_authored_activation(
                 compile_effect(item, grammar)
         profile = MODEL_PROFILES[model]
         for field in ("effect_grammar", "command_grammar"):
-            for missing in (None, "unknown", "H6199" if grammar == "H617A" else "H617A"):
+            for missing in (None, "unknown"):
                 monkeypatch.setitem(MODEL_PROFILES, model, replace(profile, **{field: missing}))
                 assert compatibility(item, model).state is CompatibilityState.INCOMPATIBLE
                 with pytest.raises(ValueError, match="activation route"):

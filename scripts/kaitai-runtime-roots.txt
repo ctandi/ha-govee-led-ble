@@ -30,6 +30,15 @@ h6199_command_ack
 h6199_effect_upload
 h6199_status_query
 h6199_status_reply
+speculative/h6199_pact1_command_write
+speculative/h6199_pact1_diy_body
+speculative/h6199_pact1_effect_upload
+speculative/h6199_pact1_studio_body
+speculative/h6199_pact1_dreamview_frame
+speculative/h6199_pact1_status_query
+speculative/h6199_pact1_status_reply
+speculative/h6199_pact1_upload_frame
+speculative/h6199_pact1_upload_ack
 h6199_wifi_body
 h6199_wifi_provision
 h6199_wifi_result

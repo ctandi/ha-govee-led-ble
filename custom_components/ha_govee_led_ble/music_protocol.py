@@ -5,7 +5,7 @@ from importlib import import_module
 from types import MappingProxyType
 from typing import Any, Final, cast
 
-from .const import MUSIC_MODE_SLUGS, get_profile
+from .const import MUSIC_MODE_SLUGS, ModelProfile, get_profile
 
 H6179CommandWrite = cast(
     Any,
@@ -15,6 +15,12 @@ H6179CommandWrite = cast(
 H6125StatusReply = cast(
     Any,
     import_module("custom_components.ha_govee_led_ble.generated_protocol.h6125_status_reply").H6125StatusReply,
+)
+H6199Pact1CommandWrite = cast(
+    Any,
+    import_module(
+        "custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_command_write"
+    ).H6199Pact1CommandWrite,
 )
 
 _H617A_MODE_CODES: Final[Mapping[str, int]] = MappingProxyType(MUSIC_MODE_SLUGS)
@@ -43,6 +49,7 @@ MUSIC_MODE_CODES_BY_MODEL: Final[Mapping[str, Mapping[str, int]]] = MappingProxy
         "H6125": _H617A_MODE_CODES,
         "H6179": _H6179_MODE_CODES,
         "H6199": _H6199_MODE_CODES,
+        "H6199-Pact1": MappingProxyType({mode.name: int(mode) for mode in H6199Pact1CommandWrite.MusicMode}),
     }
 )
 
@@ -61,6 +68,7 @@ _MUSIC_STYLE_CODES_BY_MODEL: Final[Mapping[str, frozenset[int]]] = MappingProxyT
         "H6125": frozenset({0x03, 0x30, 0x31}),
         "H6179": frozenset(),
         "H6199": frozenset({0x03}),
+        "H6199-Pact1": frozenset({0x05}),
     }
 )
 _MUSIC_PARAMETER_WRITE_CODES_BY_MODEL: Final[Mapping[str, frozenset[int]]] = MappingProxyType(
@@ -76,16 +84,16 @@ _MUSIC_PARAMETER_WRITE_CODES_BY_MODEL: Final[Mapping[str, frozenset[int]]] = Map
 )
 
 
-def _protocol_model(model: str, direction: str = "command") -> str | None:
-    if model in MUSIC_MODE_CODES_BY_MODEL:
+def _protocol_model(model: str, direction: str = "command", profile: ModelProfile | None = None) -> str | None:
+    if profile is None and model in MUSIC_MODE_CODES_BY_MODEL:
         return model
-    grammar = getattr(get_profile(model), f"{direction}_grammar")
+    grammar = getattr(profile or get_profile(model), f"{direction}_grammar")
     return grammar if grammar in MUSIC_MODE_CODES_BY_MODEL else None
 
 
-def music_code_for(model: str, slug: str) -> int:
+def music_code_for(model: str, slug: str, *, profile: ModelProfile | None = None) -> int:
     """Return the raw mode code used by a model."""
-    protocol_model = _protocol_model(model)
+    protocol_model = _protocol_model(model, profile=profile)
     codebook = MUSIC_MODE_CODES_BY_MODEL.get(protocol_model) if protocol_model is not None else None
     if codebook is None:
         raise ValueError(f"{model} has no music mode codebook")
@@ -95,24 +103,26 @@ def music_code_for(model: str, slug: str) -> int:
         raise ValueError(f"{model} does not support music mode {slug!r}") from None
 
 
-def music_slug_for(model: str, code: int, *, direction: str = "command") -> str | None:
+def music_slug_for(
+    model: str, code: int, *, direction: str = "command", profile: ModelProfile | None = None
+) -> str | None:
     """Return the model-specific slug for a raw mode code."""
-    if direction == "status" and get_profile(model).status_grammar == "H6125":
+    if direction == "status" and (profile or get_profile(model)).status_grammar == "H6125":
         return _H6125_STATUS_MODE_SLUGS.get(code)
-    protocol_model = _protocol_model(model, direction)
+    protocol_model = _protocol_model(model, direction, profile)
     codebook = _MUSIC_MODE_SLUGS_BY_MODEL.get(protocol_model) if protocol_model is not None else None
     return codebook.get(code) if codebook is not None else None
 
 
-def music_mode_supports_style(model: str, code: int) -> bool:
+def music_mode_supports_style(model: str, code: int, *, profile: ModelProfile | None = None) -> bool:
     """Return whether the mode's primary command carries Dynamic/Calm style."""
-    protocol_model = _protocol_model(model)
+    protocol_model = _protocol_model(model, profile=profile)
     return protocol_model is not None and code in _MUSIC_STYLE_CODES_BY_MODEL.get(protocol_model, ())
 
 
-def music_mode_has_parameter_write(model: str, code: int) -> bool:
+def music_mode_has_parameter_write(model: str, code: int, *, profile: ModelProfile | None = None) -> bool:
     """Return whether the mode requires a companion parameter write."""
-    protocol_model = _protocol_model(model)
+    protocol_model = _protocol_model(model, profile=profile)
     return protocol_model is not None and code in _MUSIC_PARAMETER_WRITE_CODES_BY_MODEL.get(protocol_model, ())
 
 

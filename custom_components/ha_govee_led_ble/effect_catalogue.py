@@ -223,8 +223,57 @@ class ModelEffectCatalogue:
     # Exact-model APK authoring bounds; wire grammar alone does not qualify them.
     native_diy_palette_groups: tuple[tuple[int, tuple[int, ...], int, int], ...] = ()
 
+    def for_profile(self, profile: ModelProfile) -> ModelEffectCatalogue:
+        if self.sku != "H6199" or profile.effect_grammar != "H6199-Pact1":
+            return self
+        state = CapabilityState.SUPPORTED if profile.supports_custom_effects else CapabilityState.UNSUPPORTED
+        return replace(
+            self,
+            effects=H6199_PACT1_DIY_FAMILIES,
+            templates=(
+                *(
+                    CatalogueTemplate(
+                        f"template:pact1_{family.id}",
+                        family.label,
+                        "single_layer",
+                        SingleEffect(family.family, family.variations[0].variant, 50, (DEFAULT_PALETTE[0],)),
+                    )
+                    for family in H6199_PACT1_DIY_FAMILIES
+                ),
+                *(
+                    _music_template(self.sku, mode, profile=profile)
+                    for mode in self.music_modes
+                    if mode.id in profile.music_modes
+                ),
+                *(
+                    _video_template(self.sku, mode, profile=profile)
+                    for mode in self.video_modes
+                    if mode.id in profile.video_modes
+                ),
+            ),
+            supports=CatalogueSupport(
+                multi=state,
+                advanced=CapabilityState.SUPPORTED
+                if profile.supports_advanced_effects
+                else CapabilityState.UNSUPPORTED,
+                workshop=CapabilityState.SUPPORTED
+                if profile.supports_advanced_effects
+                else CapabilityState.UNSUPPORTED,
+            ),
+            apply=replace(
+                self.apply,
+                single=state,
+                multi=state,
+                palette_diy=CapabilityState.UNSUPPORTED,
+                workshop=CapabilityState.SUPPORTED
+                if profile.supports_advanced_effects
+                else CapabilityState.UNSUPPORTED,
+            ),
+        )
+
     def to_dict(self, *, profile: ModelProfile | None = None) -> dict[str, JsonValue]:
         profile = MODEL_PROFILES[self.sku] if profile is None else profile
+        effective = self.for_profile(profile)
         result: dict[str, JsonValue] = {
             "sku": self.sku,
             "painted_effects": [dict(effect) for effect in self.painted_effects],
@@ -233,13 +282,13 @@ class ModelEffectCatalogue:
                 if self.painted_addressing != "segments"
                 else {}
             ),
-            "effects": [effect.to_dict() for effect in self.effects],
+            "effects": [effect.to_dict() for effect in effective.effects],
             "music_modes": [mode.to_dict() for mode in self.music_modes if mode.id in profile.music_modes],
             "music_settings": {
                 mode.id: {
                     "available": music_default_available(self.sku, mode.id, profile=profile),
                     "style": bool(
-                        (variant := music_variant(profile, music_code_for(self.sku, mode.id)))
+                        (variant := music_variant(profile, music_code_for(self.sku, mode.id, profile=profile)))
                         and variant.supports_style
                     ),
                     "calm_default": variant.calm_default if variant else False,
@@ -265,13 +314,13 @@ class ModelEffectCatalogue:
                             "max": spec.max_value,
                             "options": list(spec.options),
                         }
-                        for spec in music_params_for_mode(music_code_for(self.sku, mode.id), profile)
+                        for spec in music_params_for_mode(music_code_for(self.sku, mode.id, profile=profile), profile)
                     },
                 }
                 for mode in self.music_modes
                 if mode.id in profile.music_modes
             },
-            "video_modes": [mode.to_dict() for mode in self.video_modes],
+            "video_modes": [mode.to_dict() for mode in self.video_modes if mode.id in profile.video_modes],
             "video_settings": list(_video_profile_settings(profile)),
             "video_controls": {
                 "saturation_min": profile.video_saturation_min,
@@ -285,12 +334,12 @@ class ModelEffectCatalogue:
             },
             "templates": [
                 template.to_dict()
-                for template in self.templates
+                for template in effective.templates
                 if not isinstance(template.content, MusicProfile) or template.content.mode in profile.music_modes
             ],
             "workshop_templates": [template.to_dict(self.sku) for template in self.workshop_templates],
-            "workflows": frontend_release_capabilities(self.sku),
-            "supports": self.supports.to_dict(),
+            "workflows": frontend_release_capabilities(self.sku, profile=profile),
+            "supports": effective.supports.to_dict(),
             "limits": {
                 "palette_min": self.palette_min,
                 "palette_max": self.palette_max,
@@ -302,7 +351,7 @@ class ModelEffectCatalogue:
                 "music_sensitivity_min": profile.music_sensitivity_min,
                 "music_sensitivity_max": profile.music_sensitivity_max,
             },
-            "apply": self.apply.to_dict(),
+            "apply": effective.apply.to_dict(),
         }
         if profile.command_operations is not None and not supported_effect_categories(self.sku, profile=profile):
             for key in (
@@ -666,6 +715,34 @@ H6199_PALETTE_DIY_FAMILIES: Final = (
     ),
 )
 
+H6199_PACT1_DIY_FAMILIES: Final = tuple(
+    DiyEffectFamily(
+        identifier,
+        label,
+        family,
+        tuple(
+            DiyEffectVariation(f"variation_{variation}", f"Variation {index + 1}", variation)
+            for index, variation in enumerate(variations)
+        ),
+        family in {0, 1, 2, 3, 8, 9},
+        source_reference="H6199 Pact 1 candidate, issue #293",
+        rate_min=50 if family == 4 else 1,
+        rate_max=50 if family == 4 else 100,
+        palette_max=3 if family == 10 else 8,
+        multi_rate_min=0,
+    )
+    for identifier, label, family, variations in (
+        ("fade", "Fade", 0, (0, 1, 2)),
+        ("jumping", "Jumping", 1, (0, 2)),
+        ("blinking", "Blinking", 2, (0, 1, 2)),
+        ("marquee", "Marquee", 3, (3, 4, 5)),
+        ("chasing", "Chasing", 8, (9, 10)),
+        ("rainbow", "Rainbow", 9, (9, 10)),
+        ("crossing", "Crossing", 10, (0,)),
+        ("music", "Music", 4, (8, 6, 7)),
+    )
+)
+
 H6199_NATIVE_MUSIC_MODES: Final = _native_music_modes("H6199")
 
 
@@ -680,6 +757,7 @@ def _video_profile_settings(profile: ModelProfile) -> tuple[str, ...]:
             ("capture_region", profile.supports_video_capture_region),
             ("saturation", profile.supports_video_saturation),
             ("sound_effects", profile.supports_video_sound_effects),
+            ("inline_brightness", profile.supports_video_inline_brightness and profile.video_grammar == "H6199-Pact1"),
             ("white_balance", profile.supports_white_balance),
             ("relative_brightness", profile.supports_relative_brightness),
             ("blank_screen", profile.supports_blank_screen),
@@ -729,9 +807,9 @@ def _single_template(model: str, family: DiyEffectFamily) -> CatalogueTemplate:
     )
 
 
-def _music_template(model: str, mode: NativeModeOption) -> CatalogueTemplate:
-    profile = MODEL_PROFILES[model]
-    variant = music_variant(profile, music_code_for(model, mode.id))
+def _music_template(model: str, mode: NativeModeOption, *, profile: ModelProfile | None = None) -> CatalogueTemplate:
+    profile = profile or MODEL_PROFILES[model]
+    variant = music_variant(profile, music_code_for(model, mode.id, profile=profile))
     return CatalogueTemplate(
         id=f"template:music:{mode.id}",
         label=mode.label,
@@ -747,8 +825,10 @@ def _music_template(model: str, mode: NativeModeOption) -> CatalogueTemplate:
     )
 
 
-def _video_template(model: str, mode: NativeModeOption, *, saturation: int = 50) -> CatalogueTemplate:
-    profile = MODEL_PROFILES[model]
+def _video_template(
+    model: str, mode: NativeModeOption, *, saturation: int = 50, profile: ModelProfile | None = None
+) -> CatalogueTemplate:
+    profile = profile or MODEL_PROFILES[model]
     return CatalogueTemplate(
         id=f"template:video:{mode.id}",
         label=mode.label,
@@ -776,6 +856,9 @@ def _video_template(model: str, mode: NativeModeOption, *, saturation: int = 50)
                 else None
             ),
             blank_screen=False if profile.supports_blank_screen else None,
+            inline_brightness=50
+            if profile.supports_video_inline_brightness and profile.video_grammar == "H6199-Pact1"
+            else None,
         ),
     )
 
@@ -1155,6 +1238,7 @@ def validate_effect_eligibility(
     catalogue = MODEL_EFFECT_CATALOGUES.get(model)
     if catalogue is None:
         raise ValueError(f"{model} has no custom-effect catalogue")
+    catalogue = catalogue.for_profile(profile)
     if isinstance(content, PaintedEffect):
         if content.effect not in {effect["id"] for effect in catalogue.painted_effects}:
             raise ValueError(f"{model} painted effect {content.effect!r} is not supported")
@@ -1331,6 +1415,7 @@ def resolve_catalogue_template(
     catalogue = MODEL_EFFECT_CATALOGUES.get(model)
     if catalogue is None:
         raise ValueError(f"{model} has no custom-effect catalogue")
+    catalogue = catalogue.for_profile(profile or get_profile(model))
     for template in catalogue.templates:
         if template.id == template_id:
             if isinstance(template.content, PaintedEffect) and template.content.addressing == "physical_ic":
@@ -1350,6 +1435,8 @@ def validate_catalogue_template_identity(
     profile: ModelProfile | None = None,
 ) -> CatalogueTemplate:
     catalogue = MODEL_EFFECT_CATALOGUES.get(model)
+    if catalogue is not None:
+        catalogue = catalogue.for_profile(profile or get_profile(model))
     template = next((entry for entry in catalogue.templates if entry.id == template_id), None) if catalogue else None
     if template is None:
         raise EffectValidationError(f"{model} template {template_id!r} was not found")

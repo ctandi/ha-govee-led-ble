@@ -17,7 +17,7 @@ from kaitaistruct import ConsistencyError, KaitaiStream, KaitaiStructError, Read
 from .const import ModelProfile, ReadDomain, get_profile
 from .music_protocol import music_slug_for
 from .music_semantics import MusicVariant, music_variant
-from .transport import A3_CHUNK_SIZE, reassemble_a3, xor_checksum
+from .transport import A3_CHUNK_SIZE, reassemble_a1_02, reassemble_a3, xor_checksum
 
 CommandWrite = cast(
     Any,
@@ -54,6 +54,48 @@ H617aControlPayload = cast(
 H6199CommandWrite = cast(
     Any,
     import_module("custom_components.ha_govee_led_ble.generated_protocol.h6199_command_write").H6199CommandWrite,
+)
+H6199Pact1CommandWrite = cast(
+    Any,
+    import_module(
+        "custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_command_write"
+    ).H6199Pact1CommandWrite,
+)
+H6199Pact1StatusQuery = cast(
+    Any,
+    import_module(
+        "custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_status_query"
+    ).H6199Pact1StatusQuery,
+)
+H6199Pact1StatusReply = cast(
+    Any,
+    import_module(
+        "custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_status_reply"
+    ).H6199Pact1StatusReply,
+)
+H6199Pact1DiyBody = cast(
+    Any,
+    import_module("custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_diy_body").H6199Pact1DiyBody,
+)
+H6199Pact1UploadFrame = cast(
+    Any,
+    import_module(
+        "custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_upload_frame"
+    ).H6199Pact1UploadFrame,
+)
+H6199Pact1UploadAck = cast(
+    Any,
+    import_module("custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_upload_ack").H6199Pact1UploadAck,
+)
+H6199Pact1EffectUpload = cast(
+    Any,
+    import_module(
+        "custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_effect_upload"
+    ).H6199Pact1EffectUpload,
+)
+H6199Pact1StudioBody = cast(
+    Any,
+    import_module("custom_components.ha_govee_led_ble.generated_protocol.h6199_pact1_studio_body").H6199Pact1StudioBody,
 )
 H6179CommandWrite = cast(
     Any,
@@ -270,6 +312,7 @@ _STATUS_ROOTS = {
     "H617A": ("status_reply", StatusReply),
     "H6179": ("h6179_status_reply", H6179StatusReply),
     "H6199": ("h6199_status_reply", H6199StatusReply),
+    "H6199-Pact1": ("h6199_pact1_status_reply", H6199Pact1StatusReply),
 }
 _COMMAND_ROOTS = {
     "H601C": ("h601c_command_write", H601cCommandWrite),
@@ -284,11 +327,13 @@ _STATUS_QUERY_ROOTS = {
     "H617A": ("status_query", StatusQuery),
     "H6179": ("h6179_status_query", H6179StatusQuery),
     "H6199": ("h6199_status_query", H6199StatusQuery),
+    "H6199-Pact1": ("h6199_pact1_status_query", H6199Pact1StatusQuery),
 }
 _COMMAND_ACK_ROOTS = {
     "H6099": ("h6099_command_ack", H6099CommandAck),
     "H617A": ("h617a_command_ack", H617aCommandAck),
     "H6199": ("h6199_command_ack", H6199CommandAck),
+    "H6199-Pact1": ("h6199_pact1_upload_ack", H6199Pact1UploadAck),
 }
 
 
@@ -346,6 +391,16 @@ def parse_command_result(
 
 def parse_command_ack_result(frame: bytes, model: str, *, profile: ModelProfile | None = None) -> ProtocolParseResult:
     profile = profile or get_profile(model)
+    if profile.effect_grammar == "H6199-Pact1" or (
+        profile.dreamview_grammar == "H6199-Pact1" and profile.dreamview_requires_upload_ack
+    ):
+        if profile.effect_grammar == "H6199-Pact1":
+            upload = _parse_xor_frame(frame, profile.effect_grammar, _COMMAND_ACK_ROOTS)
+            if upload.parsed is not None:
+                return upload
+        upload = _parse_xor_frame(frame, "H617A", _COMMAND_ACK_ROOTS)
+        if isinstance(upload.parsed, H617aCommandAck) and upload.parsed.is_upload:
+            return upload
     # Video companions retain their independently selected ACK codec. SDK ACKs
     # also exist on devices with no video grammar (notably H617A A3 uploads).
     if profile.video_grammar is not None:
@@ -355,9 +410,32 @@ def parse_command_ack_result(frame: bytes, model: str, *, profile: ModelProfile 
     return _parse_xor_frame(frame, profile.command_grammar, _COMMAND_ACK_ROOTS)
 
 
-def upload_ack_subtype(packets: Sequence[bytes], index: int, model: str, *, profile: ModelProfile | None = None) -> int:
-    """Validate a complete A3 upload ending at index, returning its ACK command."""
-    if (profile or get_profile(model)).command_grammar != "H617A":
+def upload_ack_key(
+    packets: Sequence[bytes], index: int, model: str, *, profile: ModelProfile | None = None
+) -> tuple[int, int]:
+    """Validate a completed transfer and return its protocol/opcode ACK identity."""
+    profile = profile or get_profile(model)
+    if profile.effect_grammar == "H6199-Pact1":
+        roots = {"H6199-Pact1": ("h6199_pact1_upload_frame", H6199Pact1UploadFrame)}
+        for start in range(index, -1, -1):
+            frame = _parse_xor_frame(packets[start], profile.effect_grammar, roots).parsed
+            if frame is None or (start == index and not frame.is_final):
+                break
+            if frame.index == 0:
+                content = reassemble_a1_02(packets[start : index + 1])
+                parsed = H6199Pact1DiyBody.from_bytes(content)
+                try:
+                    parsed._read()
+                except KaitaiStructError as error:
+                    raise ValueError("invalid H6199 Pact 1 DIY upload body") from error
+                if any(parsed._io.read_bytes_full()):
+                    raise ValueError("H6199 Pact 1 DIY upload has nonzero padding")
+                return int(frame.protocol), int(frame.opcode)
+    if (
+        profile.command_grammar != "H617A"
+        and profile.effect_grammar != "H6199-Pact1"
+        and not (profile.dreamview_grammar == "H6199-Pact1" and profile.dreamview_requires_upload_ack)
+    ):
         raise ValueError("Upload ACK semantics are not qualified for this command grammar")
     roots = {"H617A": ("command_write.upload_frame", CommandWrite.UploadFrame)}
     for start in range(index, -1, -1):
@@ -365,14 +443,24 @@ def upload_ack_subtype(packets: Sequence[bytes], index: int, model: str, *, prof
         if frame is None or (start == index and not frame.is_final):
             break
         if frame.index == 0:
-            reassemble_a3(packets[start : index + 1])
-            return int(frame.body.subtype)
+            envelope = reassemble_a3(packets[start : index + 1])
+            if profile.effect_grammar == "H6199-Pact1":
+                from .dreamview import Group
+
+                if frame.body.subtype == Group().group_type:
+                    if "replace_group" not in profile.dreamview_operations:
+                        raise ValueError("DreamView replacement is not supported by this profile")
+                else:
+                    parse_a3_effect_envelope(envelope, model, profile=profile)
+            return int(frame.header[0]), int(frame.body.subtype)
     raise ValueError("Upload ACK index must end a complete A3 upload")
 
 
-def upload_ack_success(parsed: Any, subtype: int) -> bool | None:
+def upload_ack_success(parsed: Any, key: tuple[int, int]) -> bool | None:
     """Return a matching upload result, never treating an ordinary ACK as A3."""
-    if isinstance(parsed, H617aCommandAck) and parsed.is_upload and parsed.opcode == subtype:
+    if isinstance(parsed, H6199Pact1UploadAck) and (parsed.protocol, parsed.opcode) == key:
+        return bool(parsed.is_success)
+    if isinstance(parsed, H617aCommandAck) and parsed.is_upload and (parsed.protocol, parsed.opcode) == key:
         return bool(parsed.is_success)
     return None
 
@@ -557,9 +645,17 @@ def require_profile_packet(frame: bytes, profile: ModelProfile) -> None:
     """Revalidate operation capabilities and geometry at each physical attempt."""
     from .light_commands import parse_static_write
 
+    if profile.effect_grammar == "H6199-Pact1":
+        roots = {"H6199-Pact1": ("h6199_pact1_upload_frame", H6199Pact1UploadFrame)}
+        if _parse_xor_frame(frame, profile.effect_grammar, roots).parsed is not None:
+            if not profile.supports_custom_effects:
+                raise ValueError(f"{profile.name} does not support DIY uploads")
+            return
     command = _parse_xor_frame(frame, profile.command_grammar, _COMMAND_ROOTS).parsed
     if command is not None:
         operation = getattr(command.opcode, "name", "")
+        if operation in H6199_NATIVE_CONTROLS and operation not in profile.h6199_controls:
+            raise ValueError(f"{profile.name} does not support native control {operation}")
         control = boolean_control_name(operation)
         if control is not None:
             if boolean_control_is_authorized(control, profile):
@@ -622,6 +718,8 @@ def require_profile_packet(frame: bytes, profile: ModelProfile) -> None:
     ).parsed
     if query is not None:
         domain = getattr(query.domain, "name", "")
+        if domain in H6199_NATIVE_CONTROLS and domain not in profile.h6199_controls:
+            raise ValueError(f"{profile.name} does not support native control {domain}")
         control = boolean_control_name(domain)
         if control is not None:
             if boolean_control_is_authorized(control, profile):
@@ -659,6 +757,8 @@ def parse_a3_effect_envelope(envelope: bytes, model: str, *, profile: ModelProfi
         root_type = H6099EffectUpload
     elif grammar == "H6199":
         root_type = H6199EffectUpload
+    elif grammar == "H6199-Pact1":
+        root_type = H6199Pact1EffectUpload
     else:
         raise ValueError(f"{model} has no generated A3 effect grammar")
 
@@ -667,11 +767,57 @@ def parse_a3_effect_envelope(envelope: bytes, model: str, *, profile: ModelProfi
         parsed._read()
         if grammar == "H6099" and int(parsed.kind) in (3, 4):
             _ = parsed.diy
+        if grammar == "H6199-Pact1" and parsed.kind == parsed.BodyKind.layered_extended:
+            for record in parsed.content.records:
+                _ = record.extension
     except KaitaiStructError as error:
         raise ValueError(f"invalid {model} A3 effect envelope") from error
     if not parsed._io.is_eof():
         raise ValueError(f"{model} A3 effect grammar did not consume the envelope")
     return parsed
+
+
+def parse_h6199_pact1_studio_source(source: bytes) -> Any:
+    """Classify retained source in the application's ordinary-before-extended order."""
+    if not isinstance(source, bytes) or not source:
+        raise ValueError("Studio source must be nonempty bytes")
+    for extended in (False, True):
+        root = H6199Pact1StudioBody(extended, KaitaiStream(io.BytesIO(source)))
+        try:
+            root._read()
+            if extended:
+                for record in root.content.records:
+                    _ = record.extension
+        except KaitaiStructError:
+            continue
+        if any(root.content.unknown_tail):
+            raise ValueError("Studio source has unrepresentable trailing data")
+        return root
+    raise ValueError("Invalid H6199 Pact 1 Studio source")
+
+
+def h6199_pact1_studio_kind(source: bytes) -> Any:
+    if not source:
+        return H6199Pact1EffectUpload.BodyKind.layered
+    parsed = parse_h6199_pact1_studio_source(source)
+    return (
+        H6199Pact1EffectUpload.BodyKind.layered_extended
+        if parsed.is_extended
+        else H6199Pact1EffectUpload.BodyKind.layered
+    )
+
+
+def validate_h6199_pact1_layers(payload: bytes, *, extended: bool) -> None:
+    root = H6199Pact1EffectUpload.LayerContainer(extended, KaitaiStream(io.BytesIO(payload)))
+    try:
+        root._read()
+        if extended:
+            for record in root.records:
+                _ = record.extension
+    except KaitaiStructError as error:
+        raise ValueError("Invalid H6199 Pact 1 layer payload") from error
+    if any(root.unknown_tail):
+        raise ValueError("H6199 Pact 1 layer payload has nonzero trailing data")
 
 
 def _command_types(model: str, profile: ModelProfile | None = None) -> tuple[Any, Any, Any]:
@@ -732,11 +878,11 @@ def _build_status_query(
         body = _child(root_type.RelativeBrightnessQueryBody, root)
         body.selector = b"\x01"
         body.zeros = [0] * 16
-    elif domain == "colour_mode" and grammar == "H6099":
+    elif domain == "colour_mode" and grammar in {"H6099", "H6199-Pact1"}:
         body = _child(root_type.ColourModeQueryBody, root)
         body.selector = b"\x01"
         body.zeros = [0] * 16
-    elif domain == "colour_mode" and grammar in {"H601C", "H617A"}:
+    elif domain == "colour_mode" and grammar in {"H601C", "H617A", "H6199"}:
         body = _child(root_type.ColourModeQueryBody, root)
         body.selector = colour_mode_selector
         body.zeros = [0] * 16
@@ -1673,11 +1819,11 @@ def build_video_mode(
         detail.sound_effects, detail.softness = int(sound_effects), softness
         root.detail = detail
         return _serialize_xor(root)
-    if grammar not in {"H6099", "H6199"}:
+    if grammar not in {"H6099", "H6199", "H6199-Pact1"}:
         raise ValueError(f"{model} has no generated video-mode grammar")
     if video_mode not in {"movie", "game"}:
         raise ValueError(f"{model} video mode {video_mode} is not supported by the H6199 grammar")
-    root_type = _COMMAND_ROOTS[grammar][1]
+    root_type = _COMMAND_ROOTS["H6199" if grammar == "H6199-Pact1" else grammar][1]
     root = root_type()
     root.header = b"\x33"
     root.opcode = root_type.CommandOp.mode
@@ -1692,7 +1838,7 @@ def build_video_mode(
     if grammar == "H6099":
         detail.sound_type = b"\x02"
     else:
-        detail.relative_brightness_percent = 0
+        detail.relative_brightness_percent = parameters["inline_brightness"] if grammar == "H6199-Pact1" else 0
     mode.detail = detail
     root.body = mode
     return _serialize_xor(root)
@@ -1710,12 +1856,22 @@ def validate_video_parameters(grammar: str | None, values: Mapping[str, Any]) ->
             raise ValueError("invalid video picture_preset")
         if type(values["opaque"]) is not int or not 0 <= values["opaque"] <= 255:
             raise ValueError("video opaque value must be a byte")
+    elif grammar == "H6199-Pact1":
+        if set(values) != {"inline_brightness"}:
+            raise ValueError("Legacy video requires its inline brightness companion; read video state or specify it")
+        if type(values["inline_brightness"]) is not int or not 0 <= values["inline_brightness"] <= 100:
+            raise ValueError("Legacy video inline brightness must be from 0 to 100")
     elif values:
         raise ValueError("video grammar does not support these values")
     return dict(values)
 
 
 def video_parameters_from_detail(detail: Any, grammar: str | None) -> dict[str, Any] | None:
+    if grammar == "H6199-Pact1":
+        raw = getattr(detail, "inline_brightness", None)
+        if raw is None:
+            raw = detail.relative_brightness_percent
+        return validate_video_parameters(grammar, {"inline_brightness": int(raw)})
     if grammar != "H66A0-video":
         return None
     return validate_video_parameters(
@@ -1724,6 +1880,11 @@ def video_parameters_from_detail(detail: Any, grammar: str | None) -> dict[str, 
 
 
 def parse_video_command(frame: bytes, model: str, *, profile: ModelProfile | None = None) -> Any | None:
+    if (profile or get_profile(model)).video_grammar == "H6199-Pact1":
+        parsed = _parse_xor_frame(frame, "H6199", _COMMAND_ROOTS).parsed
+        if parsed is not None and parsed.opcode.name == "mode" and parsed.body.sub_mode.name == "video":
+            return parsed.body
+        return None
     return _parse_xor_frame(
         frame,
         (profile or get_profile(model)).video_grammar,
@@ -1882,7 +2043,7 @@ def build_music_mode(
     profile: ModelProfile | None = None,
 ) -> bytes:
     profile = profile or get_profile(model)
-    if type(mode_id) is not int or music_slug_for(model, mode_id) not in profile.music_modes:
+    if type(mode_id) is not int or music_slug_for(model, mode_id, profile=profile) not in profile.music_modes:
         raise ValueError(f"{model} does not support music mode {mode_id}")
     if (
         type(sensitivity) is not int
@@ -2014,6 +2175,165 @@ def h6125_outbound_transform(wire_range: tuple[int, int]) -> Callable[[bytes], b
         return packet
 
     return transform
+
+
+def build_h6199_pact1_diy_body(
+    diy_code: int,
+    family: int,
+    variation: int,
+    speed: int,
+    palette: Sequence[tuple[int, int, int]],
+    pairs: Sequence[tuple[int, int]] = (),
+) -> bytes:
+    """Write the complete ordinary A1 body, including the single-effect mix length."""
+    root = H6199Pact1DiyBody()
+    root.diy_code = diy_code
+    root.family = family
+    root.variation = variation
+    root.speed = speed
+    root.len_palette = len(palette) * 3
+    root.palette = _child(root.PaletteBody, root)
+    root.palette.colours = [_rgb(root.palette, *colour) for colour in palette]
+    root.len_mix = len(pairs) * 2
+    root.mix = _child(root.MixBody, root)
+    root.mix.pairs = []
+    for pair_family, pair_variation in pairs:
+        pair = _child(root.EffectPair, root.mix)
+        pair.family, pair.variation = pair_family, pair_variation
+        root.mix.pairs.append(pair)
+    _check_tree(root)
+    return _write(root, 6 + root.len_palette + root.len_mix)
+
+
+def build_h6199_diy_activation(diy_code: int) -> bytes:
+    if type(diy_code) is not int or not 0 <= diy_code <= 0xFFFF:
+        raise ValueError("DIY code must be an integer from 0 to 65535")
+    root = H6199CommandWrite()
+    root.header = b"\x33"
+    root.opcode = root.CommandOp.mode
+    root.body = _child(root.ModeBody, root)
+    root.body.sub_mode = root.ModeSel.diy
+    root.body.detail = _child(H6199ControlPayload.DiySelector, root.body)
+    root.body.detail.code = diy_code
+    root.body.detail.unknown_tail = bytes(14)
+    return _serialize_xor(root)
+
+
+def h6199_pact1_outbound_transform(packet: bytes) -> bytes:
+    """Encode canonical H6199 logical controls through the legacy generated wire root."""
+    parsed = parse_command_result(packet, "H6199").parsed
+    if parsed is None:
+        from .dreamview import Group, parse_dreamview_frame
+
+        upload_roots = {"H6199-Pact1": ("h6199_pact1_upload_frame", H6199Pact1UploadFrame)}
+        if _parse_xor_frame(packet, "H6199-Pact1", upload_roots).parsed is not None:
+            return packet
+        a3_roots = {"H617A": ("command_write.upload_frame", CommandWrite.UploadFrame)}
+        a3 = _parse_xor_frame(packet, "H617A", a3_roots).parsed
+        if a3 is not None:
+            if a3.index == 0 and a3.body.subtype not in {
+                *(int(kind) for kind in H6199Pact1EffectUpload.BodyKind),
+                Group().group_type,
+            }:
+                raise ValueError("H6199 Pact 1 does not support this upload kind")
+            return packet
+        if parse_dreamview_frame(packet, grammar="H6199-Pact1") is not None:
+            return packet
+        query = _parse_xor_frame(packet, "H6199", _STATUS_QUERY_ROOTS).parsed
+        domain = getattr(getattr(query, "domain", None), "name", None)
+        if query is None or not isinstance(domain, str) or domain not in H6199Pact1StatusQuery.QueryDomain.__members__:
+            raise ValueError("H6199 Pact 1 has no encoding for this packet")
+        return _build_status_query(
+            domain,
+            "H6199-Pact1",
+            segment_group=int(query.body.group) if domain == "segments" else None,
+        )
+    operation = parsed.opcode.name
+    root = H6199Pact1CommandWrite()
+    root.header = b"\x33"
+    if operation == "power":
+        root.opcode = root.CommandOp.power
+        body = _child(root.PowerBody, root)
+        body.is_on = parsed.body.is_on
+        body.unknown_tail = bytes(16)
+    elif operation == "brightness":
+        root.opcode = root.CommandOp.brightness
+        body = _child(root.BrightnessBody, root)
+        body.register = encode_wire_brightness(int(parsed.body.percent), (20, 254))
+        body.unknown_tail = bytes(16)
+    elif operation in {"strip_direction", "camera_position", "gradient"}:
+        if parsed.body.value not in (0, 1):
+            raise ValueError("H6199 Pact 1 setting requires zero or one")
+        root.opcode = root.CommandOp[operation]
+        body = _child(H6199ControlPayload.WriteValue, root)
+        body.value = parsed.body.value
+        body.unknown_tail = bytes(16)
+    elif operation == "mode":
+        root.opcode = root.CommandOp.mode
+        body = _child(root.ModeBody, root)
+        mode = parsed.body.sub_mode.name
+        if mode not in root.ModeSel.__members__:
+            raise ValueError("H6199 Pact 1 has no encoding for this mode")
+        body.sub_mode = root.ModeSel[mode]
+        source = parsed.body.detail
+        if mode == "static_colour":
+            if source.operation.name != "colour":
+                raise ValueError("H6199 Pact 1 has no segment brightness encoding")
+            detail = _child(root.StaticColourBody, body)
+            detail.rgb = (
+                _rgb(detail, source.preview.red, source.preview.green, source.preview.blue)
+                if source.kelvin
+                else _rgb(detail, source.red, source.green, source.blue)
+            )
+            detail.kelvin = source.kelvin
+            detail.segment_mask = source.segment_mask
+            detail.unknown_tail = bytes(9)
+        elif mode == "music":
+            detail = _child(root.MusicBody, body)
+            name = getattr(source.mode, "name", None)
+            if name not in root.MusicMode.__members__ or not 0 <= source.sensitivity <= 99:
+                raise ValueError("H6199 Pact 1 music mode or sensitivity is invalid")
+            detail.mode = root.MusicMode[name]
+            detail.sensitivity = source.sensitivity
+            if name == "rhythm":
+                detail.is_calm = source.is_calm
+            if name != "energetic":
+                detail.has_fixed_colour = source.has_fixed_colour
+                if source.has_fixed_colour:
+                    colour = source.fixed_colour
+                    detail.fixed_colour = _rgb(detail, colour.red, colour.green, colour.blue)
+            elif source.has_fixed_colour:
+                raise ValueError("H6199 Pact 1 Energetic has no fixed colour")
+            if name != "rhythm" and source.is_calm:
+                raise ValueError("H6199 Pact 1 style is available only for Rhythm")
+            tail_size = 14 if name == "energetic" else 12 if name == "rhythm" else 13
+            detail.unknown_tail = bytes(tail_size - (3 if source.has_fixed_colour else 0))
+        elif mode == "scene":
+            if source.music_code:
+                raise ValueError("H6199 Pact 1 scene selector has no music companion")
+            detail = _child(root.SceneBody, body)
+            detail.scene_id = source.scene_id
+            detail.unknown_tail = bytes(14)
+        elif mode == "diy":
+            detail = _child(root.DiyBody, body)
+            detail.code = source.code
+            detail.unknown_tail = bytes(14)
+        elif mode == "video":
+            detail = _child(root.VideoBody, body)
+            detail.region = root.VideoRegion[source.region.name]
+            detail.source = root.VideoSource[source.source.name]
+            detail.saturation = source.saturation
+            detail.sound_effects = source.sound_effects
+            detail.softness = source.softness
+            detail.inline_brightness = source.relative_brightness_percent
+            detail.unknown_tail = bytes(10)
+        else:
+            raise ValueError("H6199 Pact 1 has no encoding for this mode")
+        body.detail = detail
+    else:
+        raise ValueError("H6199 Pact 1 has no encoding for this operation")
+    root.body = body
+    return _serialize_xor(root)
 
 
 def music_default_palette(variant: MusicVariant | None) -> tuple[tuple[int, int, int], ...]:

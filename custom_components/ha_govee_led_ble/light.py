@@ -199,6 +199,7 @@ _STATE_FIELDS = (
     "white_brightness music_sensitivity "
     "_music_calm music_color diy_code music_mode video_mode"
     " color_mode _scene_code segment_brightness segment_state_source segment_state_observed_at"
+    " segment_brightness_source"
     " _segment_groups_observed _segment_query_colors _segment_query_brightness"
 ).split()
 
@@ -415,7 +416,12 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
             attrs["unknown_scene_code"] = scene_code
         if self.coordinator.profile.supports_segments:
             attrs["segment_colors"] = [list(color) for color in self.coordinator.segment_colors]
-            attrs["segment_brightness"] = list(self.coordinator.segment_brightness)
+            if (
+                self.coordinator.profile.supports_segment_brightness
+                or self.coordinator.segment_brightness_source != "initial"
+            ):
+                attrs["segment_brightness"] = list(self.coordinator.segment_brightness)
+                attrs["segment_brightness_source"] = self.coordinator.segment_brightness_source
             attrs["segment_state_source"] = self.coordinator.segment_state_source
         return attrs
 
@@ -648,8 +654,10 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
             return
         restored = _coerce_segment_colors(last_state.attributes.get("segment_colors"), count)
         brightness = _coerce_segment_brightness(last_state.attributes.get("segment_brightness"), count)
-        if restored is None or brightness is None:
+        if restored is None or brightness is None and coordinator.profile.supports_segment_brightness:
             return
+        if not coordinator.profile.supports_segment_brightness:
+            brightness = None
         coordinator.mark_segment_state_restored(restored, brightness)
         coordinator.async_set_updated_data(coordinator.data or {})
 
@@ -769,7 +777,7 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
                 translation_placeholders={"effect": effect_name},
             ) from exc
         if selected is not None and selected.source == "scene":
-            require_effect_route(coordinator.model, CapabilityWorkflow.NATIVE_SCENES)
+            require_effect_route(coordinator.model, CapabilityWorkflow.NATIVE_SCENES, profile=coordinator.profile)
             scene = MODEL_SCENES[coordinator.model][selected.value]
             scene_default = (
                 scene_default_for(
@@ -787,6 +795,7 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
                 scene,
                 speed_index=scene_default.speed_index if scene_default is not None else None,
                 canonical_body=scene_default.canonical_body if scene_default is not None else None,
+                profile=coordinator.profile,
             )
             return partial(
                 coordinator._async_apply_native_scene_locked,
@@ -835,7 +844,9 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
                 if video_guards is not None:
                     video_guards.append(lambda: validate_compiled_geometry(compiled, coordinator.profile))
                 return partial(async_apply_compiled_profile, coordinator, compiled)
-            variant = music_variant(coordinator.profile, music_code_for(coordinator.model, selected.value))
+            variant = music_variant(
+                coordinator.profile, music_code_for(coordinator.model, selected.value, profile=coordinator.profile)
+            )
             prepare_music_request(
                 coordinator.model,
                 selected.value,
@@ -952,7 +963,9 @@ class GoveeBLELight(_GoveeLightServicesMixin, GoveeBLEEntity, RestoreEntity, Lig
                 compiled = compile_application(
                     current,
                     self.coordinator.model,
-                    diy_code=resolve_diy_code(current, diy_code, model=self.coordinator.model),
+                    diy_code=resolve_diy_code(
+                        current, diy_code, model=self.coordinator.model, profile=self.coordinator.profile
+                    ),
                     profile=self.coordinator.profile,
                 )
 

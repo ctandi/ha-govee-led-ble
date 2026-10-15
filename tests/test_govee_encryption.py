@@ -100,6 +100,8 @@ async def negotiate(version=1, *, confirm=True):
     [
         (False, None, 0),
         (True, None, 1),
+        (False, b"\0", 0),
+        (True, b"\0", 1),
         (False, b"\x01\0", 0),
         (False, b"\x02\0\0\0\0\0", 0),
         (True, b"\x01\0", 1),
@@ -129,20 +131,31 @@ async def test_selection_without_probe(advertised, marker, version):
 
 
 @pytest.mark.parametrize("version", [1, 2])
-@pytest.mark.parametrize("marker", [b"\x01\0", b"\x02\0\0\0\0\0"])
+@pytest.mark.parametrize("marker", [b"\0", b"\x01\0", b"\x02\0\0\0\0\0"])
 async def test_zero_marker_preserves_previous_encryption_requirement(version, marker):
     session = GoveeEncryptionSession()
     await session.async_select(client(bytes((1, version))), advertised=False)
     device = client(marker)
     await session.async_select(device, advertised=False)
     assert session.version == session.required_version == version
+    assert session.diagnostics()["required_version"] == version
     assert not session.ready
     with pytest.raises(GoveeCryptoError, match="session_not_ready"):
         session.encode(build_power(True))
     device.write_gatt_char.assert_not_awaited()
 
 
-UNRECOGNISED_MARKERS = [b"", b"\0", b"\x01", b"\x02\x02", b"\x02\0", b"\x03\x01", b"\x01\x03", "not bytes"]
+UNRECOGNISED_MARKERS = [
+    b"",
+    b"\0\0",
+    b"\0\x01",
+    b"\x01",
+    b"\x02\x02",
+    b"\x02\0",
+    b"\x03\x01",
+    b"\x01\x03",
+    "not bytes",
+]
 
 
 @pytest.mark.parametrize("marker", UNRECOGNISED_MARKERS)
@@ -196,6 +209,75 @@ async def test_read_failure_has_no_raw_error_or_fallback():
     assert "secret" not in str(err.value)
     assert "secret" not in json.dumps(session.diagnostics())
     assert not session.ready
+
+
+@pytest.mark.parametrize("marker", [b"\0", b"\x01"])
+async def test_crypto_selection_failure_is_a_normal_setup_failure(hass, marker):
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+
+    coordinator = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
+    device = client(marker)
+    coordinator._advertised_encryption = True
+    if marker == b"\0":
+        device.write_gatt_char.side_effect = RuntimeError("private backend detail")
+    with patch(f"{M}.async_establish_ble_connection", return_value=device):
+        with pytest.raises(UpdateFailed, match="unreachable at setup"):
+            await coordinator._async_update_data()
+    assert not coordinator._encryption.ready
+    assert coordinator._encryption.required_version == 1
+    device.disconnect.assert_awaited()
+
+
+async def test_h6199_zero_marker_without_advertisement_reaches_real_setup(hass, monkeypatch):
+    from homeassistant.config_entries import current_entry
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.ha_govee_led_ble.const import DOMAIN
+    from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
+        build_brightness_query,
+        build_colour_mode_query,
+        build_firmware_query,
+        build_hardware_query,
+        build_segment_query,
+    )
+
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    with current_entry.set(entry):
+        coordinator = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
+    coordinator.pact_type, coordinator.pact_code = 1, 1
+    coordinator._resolve_device_profile()
+    assert coordinator.profile.status_grammar == "H6199-Pact1"
+    assert not coordinator._advertised_plaintext and not coordinator._advertised_encryption
+    device = client(b"\0")
+    replies = {
+        build_hardware_query("H6199"): b"\xaa\x07\x03" + b"1.00.01",
+        build_firmware_query("H6199"): b"\xaa\x06" + b"1.07.02",
+        build_power_query("H6199"): b"\xaa\x01\x01",
+        build_brightness_query("H6199"): b"\xaa\x04\x88",
+        build_colour_mode_query("H6199", profile=coordinator.profile): b"\xaa\x05\x0b\x00",
+    }
+    transform = coordinator.profile.outbound_transform
+    assert transform is not None
+    for group in range(1, 5):
+        replies[transform(build_segment_query(group, "H6199", profile=coordinator.profile))] = (
+            bytes((0xAA, 0xA2, group)) + b"\xff\xff\xff" * 4
+        )
+
+    async def transmit(_uuid, packet, **_kwargs):
+        if packet in replies:
+            body = replies[packet].ljust(19, b"\0")
+            device.start_notify.call_args.args[1](None, bytearray(body + bytes((xor_checksum(body),))))
+
+    device.write_gatt_char.side_effect = transmit
+    monkeypatch.setattr(coordinator, "_start_keep_alive", lambda: None)
+    with patch(f"{M}.async_establish_ble_connection", return_value=device):
+        await coordinator._async_update_data()
+    assert coordinator.is_on and coordinator.hw_version == "1.00.01" and coordinator.fw_version == "1.07.02"
+    assert coordinator._encryption.last_result == "plaintext"
+    assert coordinator._encryption.marker_error is None and coordinator._encryption.marker_length == 1
+    device.start_notify.assert_awaited_once()
+    device.disconnect.assert_awaited()
 
 
 def test_advertisement_and_omissions(hass):

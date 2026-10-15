@@ -183,11 +183,9 @@ def coordinator(hass, model="H6099") -> Any:
     return c
 
 
-async def test_physical_writer_retry_guards_and_private_authorship(hass) -> None:
+async def test_physical_writer_guards_and_private_authorship(hass) -> None:
     c = coordinator(hass)
-    client = SimpleNamespace(
-        is_connected=True, write_gatt_char=AsyncMock(side_effect=[BleakError("retry"), None, None])
-    )
+    client = SimpleNamespace(is_connected=True, write_gatt_char=AsyncMock())
     c._client = client
     c.profile = replace(PROFILE, outbound_transform=lambda packet: b"wrapped" + packet)
     c._ensure_connected = AsyncMock(return_value=client)
@@ -196,13 +194,17 @@ async def test_physical_writer_retry_guards_and_private_authorship(hass) -> None
     await c.async_replace_dreamview_group((member(),))
     packets = build_dreamview_group((member(),), PROFILE)
     writes = [call.args[1] for call in client.write_gatt_char.await_args_list]
-    assert writes == [b"wrapped" + packets[0], *(b"wrapped" + packet for packet in packets)]
+    assert writes == [b"wrapped" + packet for packet in packets]
     assert c._dreamview_last_write == "sent_unconfirmed"
     assert not c._dreamview_private_write
     assert c.packet_log and all(entry["raw"] == "" and entry["redacted"] for entry in c.packet_log)
     assert c._dreamview_store.key == f"{DOMAIN}.dreamview.dreamview-entry"
     stored = await c._dreamview_store.async_load()
-    assert stored == {"operation": "replace", "members": [member().as_dict()]}
+    assert stored == {
+        "authored": {"operation": "replace", "members": [member().as_dict()]},
+        "previous_authored": None,
+        "pending": None,
+    }
 
     async def change_profile():
         c.profile = get_profile("H6199")
@@ -241,7 +243,10 @@ async def test_observations_never_identify_authored_members_and_delete_retains_r
     assert not status["membership_confirmed"]
     await c.async_delete_dreamview_group()
     stored = await c._dreamview_store.async_load()
-    assert stored["operation"] == "delete" and stored["members"] == [member().as_dict()]
+    assert stored["authored"]["operation"] == "delete"
+    assert stored["authored"]["members"] == [member().as_dict()]
+    assert stored["previous_authored"]["operation"] == "replace"
+    assert stored["pending"] is None
     assert c._dreamview_last_write == "sent_unconfirmed"
 
 
@@ -259,7 +264,9 @@ async def test_failed_and_cancelled_upload_keeps_local_request_not_confirmation(
             await c.async_replace_dreamview_group((member(),))
         assert c._dreamview_last_write == "attempted_unconfirmed"
         assert not c._dreamview_private_write
-        assert (await c._dreamview_store.async_load())["members"] == [member().as_dict()]
+        stored = await c._dreamview_store.async_load()
+        assert stored["pending"]["members"] == [member().as_dict()]
+        assert stored["authored"] is None
 
 
 @pytest.mark.parametrize("operation", ["replace", "delete"])
@@ -295,7 +302,11 @@ async def test_storage_failure_prevents_transmission(hass, tmp_path, durable_sto
     assert not c._dreamview_private_write
     # Retrying must not be mistaken for a prior successful save or a cached write.
     await c.async_delete_dreamview_group()
-    assert json.loads(await hass.async_add_executor_job(path.read_bytes))["data"] == {**prior, "operation": "delete"}
+    assert json.loads(await hass.async_add_executor_job(path.read_bytes))["data"] == {
+        "authored": {**prior, "operation": "delete"},
+        "previous_authored": prior,
+        "pending": None,
+    }
     c.async_write_effect_sequence.assert_awaited_once()
 
 

@@ -160,6 +160,7 @@ def _make_coord(**ov) -> MagicMock:
         segment_colors=[(255, 255, 255)] * 15,
         segment_brightness=[100] * 15,
         segment_state_source="initial",
+        segment_brightness_source="initial",
         segment_state_observed_at=None,
         diy_code=None,
         color_mode=None,
@@ -201,12 +202,15 @@ def _make_coord(**ov) -> MagicMock:
             c.segment_colors = colours
         if brightness is not None:
             c.segment_brightness = brightness
+            c.segment_brightness_source = "optimistic"
         c.segment_state_source = "optimistic"
         c.segment_state_observed_at = None
 
     def mark_segment_state_restored(colours, brightness) -> None:
         c.segment_colors = colours
-        c.segment_brightness = brightness
+        if brightness is not None:
+            c.segment_brightness = brightness
+            c.segment_brightness_source = "restored"
         c.segment_state_source = "restored"
         c.segment_state_observed_at = None
 

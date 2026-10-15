@@ -28,7 +28,7 @@ from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
     parse_command_result,
     parse_status_result,
     require_profile_packet,
-    upload_ack_subtype,
+    upload_ack_key,
     upload_ack_success,
 )
 from custom_components.ha_govee_led_ble.light_commands import (
@@ -243,18 +243,18 @@ def test_static_operation_gate_does_not_grant_other_multi_commands() -> None:
 def test_shared_upload_ack_offsets_and_positive_result(subtype: int) -> None:
     profile = get_profile("H6102")
     packets = fragment_a3(subtype, bytes(18))
-    assert upload_ack_subtype(packets, len(packets) - 1, "H9901", profile=profile) == subtype
+    assert upload_ack_key(packets, len(packets) - 1, "H9901", profile=profile) == (0xA3, subtype)
     for success in (False, True):
         # Music's byte 2 is deliberately opposite to status at byte 3.
         payload = f"{int(success):02x}{int(not success):02x}" if subtype == 0x41 else f"{int(not success):02x}a5"
         result = parse_command_ack_result(_frame(f"a3{subtype:02x}{payload}"), "H9901", profile=profile)
         assert result.parsed is not None and result.parser == "h617a_command_ack"
-        assert upload_ack_success(result.parsed, subtype) is success
-        assert upload_ack_success(result.parsed, subtype + 1) is None
+        assert upload_ack_success(result.parsed, (0xA3, subtype)) is success
+        assert upload_ack_success(result.parsed, (0xA3, subtype + 1)) is None
     ordinary = parse_command_ack_result(_frame(f"33{subtype:02x}00"), "H6102").parsed
-    assert ordinary is not None and upload_ack_success(ordinary, subtype) is None
+    assert ordinary is not None and upload_ack_success(ordinary, (0xA3, subtype)) is None
     with pytest.raises(ValueError, match="complete A3"):
-        upload_ack_subtype(packets, len(packets) - 2, "H6102")
+        upload_ack_key(packets, len(packets) - 2, "H6102")
 
 
 def test_native_and_advanced_diy_share_layered_upload_syntax() -> None:
@@ -269,6 +269,6 @@ def test_native_and_advanced_diy_share_layered_upload_syntax() -> None:
             compiled = compile_application(LibraryItem.new("Synthetic protocol check", effect), "H6102")
             assert isinstance(compiled, CompiledEffect)
             assert compiled.activation_packet == build_scene_activation("H6102", selector)
-            assert upload_ack_subtype(compiled.upload_packets, len(compiled.upload_packets) - 1, "H6102") == 2
+            assert upload_ack_key(compiled.upload_packets, len(compiled.upload_packets) - 1, "H6102") == (0xA3, 2)
             parsed = parse_a3_effect_envelope(reassemble_a3(compiled.upload_packets), "H6102")
             assert len(parsed.records) == len(content.layers)

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .const import get_profile
+from kaitaistruct import KaitaiStructError
+
+from .const import ModelProfile, get_profile
 from .effect_domain import (
     H617A_SEGMENT_COUNT,
     EffectContent,
@@ -18,6 +20,8 @@ from .generated_protocol_adapter import (
     DiyType03,
     DiyType04,
     H6199EffectUpload,
+    H6199Pact1DiyBody,
+    H6199Pact1EffectUpload,
     SceneBody,
     SceneType1Body,
     parse_a3_effect_envelope,
@@ -41,30 +45,55 @@ class UnsupportedA3EffectError(ValueError):
 def decode_a3_effect_frames(
     frames: tuple[bytes, ...],
     model: str,
+    *,
+    profile: ModelProfile | None = None,
 ) -> EffectContent:
     """Reassemble and decode locally generated A3 frames through Kaitai."""
     envelope = reassemble_a3(frames)
-    return decode_a3_effect(parse_a3_effect_envelope(envelope, model), model)
+    return decode_a3_effect(parse_a3_effect_envelope(envelope, model, profile=profile), model, profile=profile)
 
 
 def decode_effect_frames(
     frames: tuple[bytes, ...],
     model: str,
     transport: str,
+    *,
+    profile: ModelProfile | None = None,
 ) -> EffectContent:
     """Decode locally generated upload frames using their explicit transport."""
     if transport == "a3":
-        return decode_a3_effect_frames(frames, model)
+        return decode_a3_effect_frames(frames, model, profile=profile)
     if transport == "a1_02":
-        if get_profile(model).effect_grammar != "H6179":
+        grammar = (profile or get_profile(model)).effect_grammar
+        if grammar == "H6199-Pact1":
+            root = H6199Pact1DiyBody.from_bytes(reassemble_a1_02(frames))
+            try:
+                root._read()
+            except KaitaiStructError as error:
+                raise ValueError("Invalid A1 DIY body") from error
+            if any(root._io.read_bytes_full()):
+                raise ValueError("A1 DIY body has nonzero trailing data")
+            palette = tuple(_rgb(colour) for colour in root.palette.colours)
+            if root.family == 255:
+                if root.variation != 0:
+                    raise ValueError("A1 mixed DIY has an unknown variation")
+                return MultiEffect(
+                    tuple(EffectPair(pair.family, pair.variation) for pair in root.mix.pairs),
+                    root.speed,
+                    palette,
+                )
+            if root.mix.pairs:
+                raise ValueError("A1 single DIY cannot discard mixed pairs")
+            return SingleEffect(root.family, root.variation, root.speed, palette)
+        if grammar != "H6179":
             raise ValueError(f"{model} cannot decode A1 02 effect frames")
         return decode_h6179_effect(reassemble_a1_02(frames))
     raise ValueError(f"unsupported effect upload transport {transport!r}")
 
 
-def decode_a3_effect(tree: Any, model: str) -> EffectContent:
+def decode_a3_effect(tree: Any, model: str, *, profile: ModelProfile | None = None) -> EffectContent:
     """Decode a parsed generated A3 tree without assigning unevidenced semantics."""
-    grammar = get_profile(model).effect_grammar
+    grammar = (profile or get_profile(model)).effect_grammar
     if grammar == "H6099":
         if int(tree.kind) == 4:
             return _decode_h617a_type04(tree.diy)
@@ -102,6 +131,13 @@ def decode_a3_effect(tree: Any, model: str) -> EffectContent:
                 "decoded from upload packets alone"
             )
         raise UnsupportedA3EffectError(f"H6199 A3 body kind {int(tree.kind)} is not supported")
+    if grammar == "H6199-Pact1":
+        if not isinstance(tree, H6199Pact1EffectUpload):
+            raise TypeError("tree is not a generated legacy H6199 A3 root")
+        if tree.kind in (tree.BodyKind.layered, tree.BodyKind.layered_extended):
+            effect, _padding = decode_workshop_effect(model, bytes(tree._raw_content), profile=profile)
+            return effect
+        raise UnsupportedA3EffectError("Legacy palette scenes require their exact catalogue identity")
 
     raise ValueError(f"{model} has no canonical A3 effect decoder")
 

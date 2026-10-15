@@ -29,13 +29,17 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     if coordinator.model != "H6199":
         return
-    added = False
+    added: set[str] = set()
 
     def add_qualified() -> None:
-        nonlocal added
-        if not added and h6199_camera_controls_state(coordinator.model, coordinator) is CapabilityState.SUPPORTED:
-            added = True
-            async_add_entities([GoveeBLEControlSelect(entry, key) for key in _OPTIONS])
+        qualified = {
+            key
+            for key in _OPTIONS
+            if h6199_camera_controls_state(coordinator.model, coordinator, key) is CapabilityState.SUPPORTED
+        } - added
+        if qualified:
+            added.update(qualified)
+            async_add_entities([GoveeBLEControlSelect(entry, key) for key in _OPTIONS if key in qualified])
 
     add_qualified()
     entry.async_on_unload(coordinator.async_add_listener(add_qualified))
@@ -57,7 +61,8 @@ class GoveeBLEControlSelect(GoveeBLEEntity, SelectEntity):
     @property
     def available(self) -> bool:
         return (
-            h6199_camera_controls_state(self.coordinator.model, self.coordinator) is CapabilityState.SUPPORTED
+            h6199_camera_controls_state(self.coordinator.model, self.coordinator, self._control)
+            is CapabilityState.SUPPORTED
             and super().available
         )
 
@@ -70,7 +75,10 @@ class GoveeBLEControlSelect(GoveeBLEEntity, SelectEntity):
         if option not in self.options:
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key="invalid_control_request")
         async with async_control_intent(self.coordinator, ControlIntent.USER):
-            if h6199_camera_controls_state(self.coordinator.model, self.coordinator) is not CapabilityState.SUPPORTED:
+            if (
+                h6199_camera_controls_state(self.coordinator.model, self.coordinator, self._control)
+                is not CapabilityState.SUPPORTED
+            ):
                 raise ServiceValidationError(translation_domain=DOMAIN, translation_key="invalid_control_request")
             if backend := get_effect_backend(self.hass):
                 await backend.preview.async_supersede_device(self._entry.entry_id, reason="home_assistant_control")

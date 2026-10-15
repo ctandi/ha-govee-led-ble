@@ -33,6 +33,8 @@ seq:
     valid:
       expr: not unused_must_be_zero or _ == 0
 instances:
+  has_brightness:
+    value: true
   num_segments:
     doc: Meaningful record count, independent of unused wire slots and record values.
     value: 'group * group_size <= segment_count ? group_size : segment_count - (group - 1) * group_size'

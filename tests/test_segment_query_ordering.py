@@ -11,13 +11,17 @@ from bleak.exc import BleakError
 from custom_components.ha_govee_led_ble import coordinator as coordinator_module
 from custom_components.ha_govee_led_ble.control_arbiter import ControlIntent
 from custom_components.ha_govee_led_ble.coordinator import GoveeBLECoordinator
+from custom_components.ha_govee_led_ble.coordinator_status import ParsedMode
+from custom_components.ha_govee_led_ble.effect_deployments import PriorControlState
 from custom_components.ha_govee_led_ble.generated_protocol_adapter import (
     build_brightness_query,
     build_colour_mode_query,
     build_power_query,
     build_segment_query,
+    h6199_pact1_outbound_transform,
 )
 from custom_components.ha_govee_led_ble.govee_encryption.session import GoveeEncryptionSession
+from custom_components.ha_govee_led_ble.light import GoveeBLELight
 from custom_components.ha_govee_led_ble.light_commands import build_segment_brightness
 from tests.test_coordinator import _packet
 
@@ -40,6 +44,35 @@ def pages(levels):
         _packet(0xAA, 0xA5, [group, *(v for i in range((group - 1) * 3, group * 3) for v in (levels[i], i, 96, 160))])
         for group in range(1, 6)
     ]
+
+
+async def test_rgb_only_pages_observe_and_persist_colours_without_brightness(hass):
+    c = GoveeBLECoordinator(hass, "11:22:33:44:55:66", "H6199", configuration_url=None)
+    c.profile = replace(
+        c.profile,
+        status_grammar="H6199-Pact1",
+        outbound_transform=h6199_pact1_outbound_transform,
+        brightness_wire_range=(20, 254),
+        supports_segment_brightness=False,
+    )
+    c.color_mode = ParsedMode.COLOUR
+    colours = [(index, index * 2, index * 3) for index in range(15)]
+    for group in (4, 1, 1, 3, 2):
+        records = colours[(group - 1) * 4 : group * 4]
+        reply = _packet(0xAA, 0xA2, [group, *(channel for colour in records for channel in colour)])
+        c._notify_callback(None, bytearray(reply))
+        if group != 2:
+            assert not c._field_revisions.get("segment_colors", 0)
+    assert c.segment_colors == colours and c.segment_state_source == "observed"
+    assert c.segment_brightness_source == "initial"
+    assert not c._field_revisions.get("segment_brightness", 0)
+    state = c.capture_effect_control_state()
+    assert state.segment_colors == tuple(colours) and state.segment_brightness is None
+    assert PriorControlState.from_dict(state.to_dict()) == state
+    attributes = GoveeBLELight(c).extra_state_attributes
+    assert attributes["segment_colors"] == [list(colour) for colour in colours]
+    assert "segment_brightness" not in attributes
+    await c.disconnect()
 
 
 @pytest.mark.parametrize("producer", ["keepalive", "refresh", "observe", "segments"])

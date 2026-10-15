@@ -168,9 +168,10 @@ def parse_color_mode(generated: Any, model: str, *, profile: ModelProfile | None
             return ParsedColorModeResponse(
                 mode=ParsedMode.MUSIC,
                 music_mode=music_slug_for(
-                    profile.status_grammar or model,
+                    model,
                     int(values["music_mode_id"]),
                     direction="status",
+                    profile=profile,
                 ),
                 music_sensitivity=int(values["sensitivity"]),
                 music_color=music_color,
@@ -179,6 +180,8 @@ def parse_color_mode(generated: Any, model: str, *, profile: ModelProfile | None
 
     body = generated.body
     mode_name = getattr(body.mode, "name", None)
+    if profile.status_grammar == "H6199-Pact1" and mode_name not in {"static_colour", "music", "video", "scene", "diy"}:
+        raise ValueError("unsupported legacy mode selector")
     if mode_name == "video" and profile.video_grammar == "H66A0-video":
         detail = body.detail
         source = getattr(detail.source, "name", None)
@@ -200,10 +203,18 @@ def parse_color_mode(generated: Any, model: str, *, profile: ModelProfile | None
     music_mode = None
     if mode_name == "music":
         detail = getattr(body, "detail", getattr(body, "mode_body", None))
+        if detail is None:
+            raise ValueError("missing music mode detail")
         mode_id = int(getattr(detail, "mode", getattr(detail, "mode_id", -1)))
-        music_mode = music_slug_for(profile.status_grammar or model, mode_id, direction="status")
+        music_mode = music_slug_for(model, mode_id, direction="status", profile=profile)
         if music_mode not in profile.music_modes:
             raise ValueError("music selector is unsupported for model")
+        if profile.status_grammar == "H6199-Pact1" and (
+            not profile.music_sensitivity_min <= int(detail.sensitivity) <= profile.music_sensitivity_max
+            or getattr(detail, "has_fixed_colour", 0) not in (0, 1)
+            or getattr(detail, "is_calm", 0) not in (0, 1)
+        ):
+            raise ValueError("invalid legacy music sensitivity, style or fixed-colour flag")
     if mode_name in {"static", "static_colour"}:
         detail = getattr(body, "mode_body", getattr(body, "detail", None))
         rgb = getattr(detail, "rgb", None)
@@ -221,20 +232,23 @@ def parse_color_mode(generated: Any, model: str, *, profile: ModelProfile | None
             color_temp_kelvin=int(raw_kelvin) if raw_kelvin is not None else None,
             multi_effect_flag=getattr(detail, "sub", None),
         )
-    if profile.status_grammar in {"H6099", "H6199"} or (
-        mode_name == "video" and profile.video_grammar in {"H6099", "H6199"}
+    if profile.status_grammar in {"H6099", "H6199", "H6199-Pact1"} or (
+        mode_name == "video" and profile.video_grammar in {"H6099", "H6199", "H6199-Pact1"}
     ):
         if mode_name == "video":
-            if profile.video_grammar not in {"H6099", "H6199"}:
+            if profile.video_grammar not in {"H6099", "H6199", "H6199-Pact1"}:
                 return ParsedColorModeResponse()
             detail = body.detail
             source_name = getattr(detail.source, "name", None)
             region_name = getattr(detail.region, "name", None)
             if source_name not in profile.video_modes or region_name not in {"part", "all"}:
                 return ParsedColorModeResponse()
+            if detail.sound_effects not in (0, 1) or not 1 <= detail.softness <= 100:
+                raise ValueError("invalid video sound effects or softness")
             return ParsedColorModeResponse(
                 mode=ParsedMode.VIDEO,
                 video_mode=source_name,
+                video_parameters=video_parameters_from_detail(detail, profile.video_grammar),
                 video_full_screen=region_name == "all" if profile.supports_video_capture_region else None,
                 # Keep sibling video observations when firmware reports an unqualified saturation.
                 video_saturation=(
@@ -255,7 +269,7 @@ def parse_color_mode(generated: Any, model: str, *, profile: ModelProfile | None
                     music_color_present=False,
                 )
             fixed_colour = None
-            if detail.has_fixed_colour:
+            if getattr(detail, "has_fixed_colour", 0):
                 fixed_colour = (
                     int(detail.fixed_colour.red),
                     int(detail.fixed_colour.green),
@@ -265,7 +279,7 @@ def parse_color_mode(generated: Any, model: str, *, profile: ModelProfile | None
                 mode=ParsedMode.MUSIC,
                 music_mode=music_mode,
                 music_sensitivity=int(detail.sensitivity),
-                music_calm=bool(detail.is_calm),
+                music_calm=bool(detail.is_calm) if music_mode == "rhythm" else None,
                 music_color=fixed_colour,
             )
         if mode_name == "scene":

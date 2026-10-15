@@ -10,6 +10,10 @@ doc: |
   E719/E71A layouts are not implemented. Unknown marker/advertisement tails
   and V1 padding remain opaque. Advertisement flags follow BleUtil's
   parseBleBroadcastPact; omission is not negative encryption evidence.
+  Issue #293 reports the exact single-byte 00 information response on H6199
+  HW 1.00.01 / FW 1.07.02. It leaves the application's encryption version
+  disabled; it is not a truncated format-1 or format-2 encryption marker.
+  Additional bytes after format zero remain unknown, not plaintext evidence.
 seq: []
 types:
   advertisement:
@@ -30,6 +34,7 @@ types:
         type: u1
       - id: version
         type: u1
+        if: format != 0
       - id: flag
         type: u1
         if: format == 2
@@ -41,6 +46,9 @@ types:
         if: format == 2
       - id: unknown_tail
         size-eos: true
+    instances:
+      is_legacy_plaintext:
+        value: format == 0 and unknown_tail.size == 0
   v1_handshake:
     seq:
       - id: magic

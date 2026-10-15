@@ -11288,6 +11288,7 @@
           "video",
           "scenes",
           "effects",
+          "multi_layered",
           "reactive",
           "advanced"
         ],
@@ -11314,7 +11315,7 @@
       }
     ],
     "editor_info": {
-      "api_version": 15,
+      "api_version": 16,
       "compiler_version": 5,
       "effect_schema_version": 2,
       "limits": {
