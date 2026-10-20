@@ -49,6 +49,8 @@ Every exact SKU has its own profile, support quality, catalogue identity, and pr
 - Reuse `govee_segment_page` in status KSY with the evidenced segment count, page size, and unused-byte rule. Its fixed page body has four wire slots; only the declared meaningful records contribute to observed state. Keep profile counts consistent with the selected schema, and preserve uncertain unused bytes rather than treating zero-valued records as absent.
 - RGB-only pages use their own record shape and must not publish invented segment brightness.
   Recovery retains colour-only layouts; absence of brightness is not a default percentage.
+- Configurable string counts are product configuration, not attachment detection or physical IC counts.  Confirm configuration before constructing a mask-dependent transaction, retain the same control intent through its writes, and reject prepared masks after a configuration or subscription change.  Cached presentation does not authorise writes; missing geometry must not disable topology-independent controls.
+- Keep incoming mode layouts independent of outgoing layouts.  A selector's presence does not prove its body or parameters, and companion RGB does not establish per-bulb white intent.  Declare `segment_colour_mode_ambiguous` when readback loses that distinction; previews and rollback must not claim lossless restoration.  Prior-off power cleanup remains independent of appearance recovery.
 
 Extension tests should demonstrate reuse through declarations without unrelated exact-model codec allowlist edits. Register a test-only exact-model profile and an independent status-root key rather than replacing an existing root or mocking profile lookup. Synthetic profiles and speculative fixtures establish these software boundaries, not physical device compatibility; the H66A0 fixture does not enable real H66A0 runtime support.
 
@@ -132,6 +134,10 @@ H6076 music and the H60A1/H60A6 colour-temperature additions also have explicit
 maintainer approval for stable inclusion before owner qualification. Their
 existing model support labels and speculative protocol evidence remain unchanged;
 physical qualification of these additions is still outstanding.
+H7020 also has explicit maintainer approval for stable inclusion: its owner
+confirmed basic power, brightness, RGB and colour-temperature control on Pact
+1/code 1, while the expanded candidate remains Experimental pending owner
+qualification of its additional controls and speculative protocol schemas.
 Prerelease versions are stamped only in the packaged artifact; feature branches retain the current stable source version so release-candidate metadata cannot leak into master.
 
 ## Device-owner validation

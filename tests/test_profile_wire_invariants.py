@@ -74,6 +74,7 @@ _QUALIFIED_CONTEXTS: tuple[tuple[str, str, int | None, int | None, str | None, s
     ("H6125-hw-1.00.03", "H6125", 1, 2, "1.07.00", "1.00.03"),
     ("H6125-hw-1.00.04", "H6125", 1, 2, "1.07.01", "1.00.04"),
     ("H6199-pact1", "H6199", 1, 1, None, None),
+    ("H7020-unqualified", "H7020", None, None, None, None),
 )
 
 
@@ -191,6 +192,8 @@ def _status_frames_for_domain(domain: ReadDomain, model: str, profile: ModelProf
         return (_status(0xAE, bytes([0x01, len(profile.video_brightness_zones), 10, 20, 30, 40, 0, 0])),)
     if domain is ReadDomain.SEGMENTS:
         return tuple(_segment_pages(profile))
+    if domain is ReadDomain.CONFIGURED_STRINGS:
+        return (_status(0x0F, b"\x01"),)
     if domain is ReadDomain.INSTALLATION_DIRECTION:
         return (_status(0x30, b"\x02"),)
     if domain is ReadDomain.CAMERA_HEALTH:
@@ -266,6 +269,9 @@ def test_segment_pages_reach_observed_state(hass, model: str, profile: ModelProf
     effective profile, including runtime-qualified ceiling and strip profiles."""
     coordinator = GoveeBLECoordinator(hass, "AA:BB:CC:DD:EE:FF", model, configuration_url="http://x")
     coordinator.profile = profile
+    if profile.configured_string_counts:
+        coordinator._configured_strings_confirmed = True
+        coordinator._segment_query_generation = coordinator._profile_generation
     coordinator.segment_colors = [(255, 255, 255)] * profile.segment_count
     coordinator.segment_brightness = [100] * profile.segment_count
     for page in _segment_pages(profile):
@@ -303,6 +309,7 @@ def _query_builders(model: str, profile: ModelProfile) -> dict[ReadDomain, tuple
             (lambda group=group: a.build_segment_query(group, model, profile=profile))
             for group in range(1, profile.segment_group_count + 1)
         ),
+        ReadDomain.CONFIGURED_STRINGS: (lambda: a.build_configured_strings_query(profile),),
         ReadDomain.DISPLAY_SETTING: tuple(display_queries),
         ReadDomain.RELATIVE_BRIGHTNESS: (lambda: a.build_relative_brightness_query(model, profile=profile),),
         ReadDomain.INSTALLATION_DIRECTION: (lambda: a.build_installation_direction_query(model, profile=profile),),
@@ -340,6 +347,9 @@ def test_every_claimed_read_domain_is_consumed(hass, model: str, profile: ModelP
         coordinator = GoveeBLECoordinator(hass, "AA:BB:CC:DD:EE:FF", model, configuration_url="http://x")
         coordinator._client = MagicMock(is_connected=True)
         coordinator.profile = replace(profile, profile_identity_fields=frozenset())
+        if profile.configured_string_counts:
+            coordinator._configured_strings_confirmed = True
+            coordinator._segment_query_generation = coordinator._profile_generation
         coordinator.segment_colors = [(255, 255, 255)] * profile.segment_count
         coordinator.segment_brightness = [100] * profile.segment_count
         for frame in _status_frames_for_domain(domain, model, profile):

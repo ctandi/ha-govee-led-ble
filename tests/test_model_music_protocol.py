@@ -1,5 +1,7 @@
 """Tests for model-specific music protocol metadata."""
 
+from dataclasses import replace
+
 import pytest
 
 from custom_components.ha_govee_led_ble.const import MODEL_PROFILES, device_profile
@@ -12,6 +14,7 @@ from custom_components.ha_govee_led_ble.music_protocol import (
     H6125StatusReply,
     H6179CommandWrite,
     H6199CommandWrite,
+    H7020CommandWrite,
     music_code_for,
     music_codebook,
     music_mode_has_parameter_write,
@@ -42,6 +45,12 @@ def test_model_music_codebooks_preserve_existing_models_and_add_h6179() -> None:
         "energetic": 0x05,
         "rhythm": 0x03,
         "spectrum": 0x04,
+        "rolling": 0x06,
+    }
+    assert MUSIC_MODE_CODES_BY_MODEL["H7020"] == {
+        "rhythm": 0x03,
+        "spectrum": 0x04,
+        "energetic": 0x05,
         "rolling": 0x06,
     }
 
@@ -82,6 +91,7 @@ def test_music_style_support_is_model_specific() -> None:
     assert not music_mode_supports_style("H6199", 0x30)
     assert not music_mode_supports_style("H6179", 0x00)
     assert not music_mode_supports_style("H6179", 0x01)
+    assert not music_mode_supports_style("H7020", 0x03)
 
 
 def test_music_parameter_writes_are_model_specific() -> None:
@@ -93,6 +103,7 @@ def test_music_parameter_writes_are_model_specific() -> None:
     assert not any(music_mode_has_parameter_write("H6199", code) for code in _H617A_CODES.values())
     assert not music_mode_has_parameter_write("H6179", 0x00)
     assert not music_mode_has_parameter_write("H6179", 0x01)
+    assert not music_mode_has_parameter_write("H7020", 0x03)
 
 
 def test_h6076_codebook_is_its_own_numbering_not_the_h617a_one() -> None:
@@ -135,6 +146,7 @@ def test_codebooks_match_generated_kaitai_enums_and_gate_on_effective_profile() 
         "H6076": H6076MusicWrite.MusicMode,
         "H6179": H6179CommandWrite.MusicEffect,
         "H6199": H6199CommandWrite.MusicMode,
+        "H7020": H7020CommandWrite.MusicMode,
     }
     for model, enum_type in expected_enums.items():
         assert MUSIC_MODE_CODES_BY_MODEL[model] == {mode.name: int(mode) for mode in enum_type}
@@ -152,6 +164,7 @@ def test_codebooks_match_generated_kaitai_enums_and_gate_on_effective_profile() 
         ("H6125", device_profile("H6125", 10, 1, firmware="2.03.99", hardware="2.01.01")),
         ("H6125", device_profile("H6125", 10, 2, firmware="3.04.37", hardware="3.01.10")),
         ("H6199", device_profile("H6199", 1, 1)),
+        ("H7020", device_profile("H7020", None, None)),
     ]
     status_enums = {
         "H6125": {mode.name: int(mode) for mode in H6125StatusReply.MusicMode},
@@ -177,3 +190,19 @@ def test_codebooks_match_generated_kaitai_enums_and_gate_on_effective_profile() 
                     music_code_for(model, slug, profile=profile)
         for slug, status_code in status_codes.items():
             assert music_slug_for(model, status_code, direction="status", profile=profile) == slug
+
+
+def test_h7020_music_grammar_is_independent_of_basic_command_grammar(monkeypatch) -> None:
+    model = "TEST-H7020-MUSIC"
+    profile = replace(
+        MODEL_PROFILES["H7020"],
+        name="Synthetic H7020 music",
+        command_grammar="H617A",
+        music_grammar="H7020",
+    )
+    monkeypatch.setitem(MODEL_PROFILES, model, profile)
+
+    assert music_code_for(model, "rhythm") == 0x03
+    assert music_slug_for(model, 0x04) == "spectrum"
+    assert not music_mode_supports_style(model, 0x03)
+    assert not music_mode_has_parameter_write(model, 0x03)

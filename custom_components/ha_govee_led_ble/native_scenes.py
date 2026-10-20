@@ -62,11 +62,11 @@ def build_native_scene_packets(
     if profile is not None:
         scene = scene_for_profile(scene, profile)
     profile = get_profile(model) if profile is None else profile
-    if profile.command_grammar == "H6179" or profile.selector_only_scene_bits is not None:
+    if scene.selector_only or profile.command_grammar == "H6179" or profile.selector_only_scene_bits is not None:
         if speed_index is not None:
-            raise ValueError(f"{model} native scenes are selector-only and do not accept speed_index")
+            raise ValueError(f"{model} selector-only native scenes do not accept speed_index")
         if canonical_body is not None:
-            raise ValueError(f"{model} native scenes are selector-only and do not accept canonical_body")
+            raise ValueError(f"{model} selector-only native scenes do not accept canonical_body")
         return [build_scene_activation(model, scene_selector_code(model, scene, profile=profile), profile=profile)]
 
     payload, _resolved_speed = resolve_native_scene_body(

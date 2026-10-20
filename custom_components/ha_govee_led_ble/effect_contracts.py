@@ -18,9 +18,9 @@ from .effect_limits import (
     MAX_SCENE_CATALOGUE_ENTRIES,
 )
 
-EDITOR_API_VERSION: Final = 15
+EDITOR_API_VERSION: Final = 16
 EDITOR_ASSET_VERSION: Final = 22
-EFFECT_COMPILER_VERSION: Final = 5
+EFFECT_COMPILER_VERSION: Final = 6
 RELEASE_CAPABILITY_SCHEMA_VERSION: Final = 1
 
 
@@ -563,6 +563,63 @@ RELEASE_CAPABILITY_CONTRACT: Final = (
     *(capability for capability in _RELEASE_CAPABILITY_BASE if capability.model == "H6179"),
     *(replace(capability, model="H617F") for capability in _RELEASE_CAPABILITY_BASE if capability.model == "H617A"),
     *(capability for capability in _RELEASE_CAPABILITY_BASE if capability.model == "H6199"),
+    *(
+        _capability(
+            "H7020",
+            workflow,
+            label,
+            kind,
+            route,
+            strategy,
+            VerificationConfidence.SELECTION_ONLY,
+            PhysicalValidationState.NOT_VALIDATED,
+            EvidenceClassification.STRUCTURAL,
+        )
+        for workflow, label, kind, route, strategy in (
+            (
+                CapabilityWorkflow.NATIVE_SCENES,
+                "Scenes",
+                "scene_builtin",
+                ApplicationRoute.STUDIO_SCENE_APPLY,
+                CompilerDeployerStrategy.NATIVE_EFFECT_SELECTION,
+            ),
+            (
+                CapabilityWorkflow.LAYERED_SCENES,
+                "Layered scenes",
+                "scene_layered",
+                ApplicationRoute.HOME_ASSISTANT_CONTROL,
+                CompilerDeployerStrategy.MODEL_SCENE_ENGINE,
+            ),
+            (
+                CapabilityWorkflow.SINGLE,
+                "Basic DIY",
+                "h617a_single",
+                ApplicationRoute.HOME_ASSISTANT_CONTROL,
+                CompilerDeployerStrategy.H617A_CUSTOM_ENGINE,
+            ),
+            (
+                CapabilityWorkflow.MULTI,
+                "Mixed DIY",
+                "h617a_multi",
+                ApplicationRoute.HOME_ASSISTANT_CONTROL,
+                CompilerDeployerStrategy.H617A_CUSTOM_ENGINE,
+            ),
+            (
+                CapabilityWorkflow.ADVANCED,
+                "Template DIY",
+                "advanced",
+                ApplicationRoute.HOME_ASSISTANT_CONTROL,
+                CompilerDeployerStrategy.MODEL_SCENE_ENGINE,
+            ),
+            (
+                CapabilityWorkflow.NATIVE_MUSIC,
+                "Music",
+                "music_profile",
+                ApplicationRoute.HOME_ASSISTANT_CONTROL,
+                CompilerDeployerStrategy.COORDINATOR_WRITER,
+            ),
+        )
+    ),
 )
 
 
@@ -581,10 +638,21 @@ def release_capability(model: str, workflow: CapabilityWorkflow) -> ReleaseCapab
     )
 
 
-def profile_supports_workflow(profile: ModelProfile, workflow: CapabilityWorkflow) -> bool:
+def profile_supports_workflow(profile: ModelProfile, workflow: CapabilityWorkflow, *, model: str | None = None) -> bool:
     """Apply device restrictions without promoting its exact-SKU workflow ceiling."""
     if profile.effect_workflows is not None and workflow.value not in profile.effect_workflows:
         return False
+    advanced_supported = profile.supports_advanced_effects or (
+        profile.supports_custom_effects
+        and (
+            (
+                model is not None
+                and not get_profile(model).supports_advanced_effects
+                and release_capability(model, CapabilityWorkflow.ADVANCED) is not None
+            )
+            or (model is None and profile.command_grammar == "H7020")
+        )
+    )
     return {
         CapabilityWorkflow.NATIVE_SCENES: profile.supports_scenes,
         CapabilityWorkflow.EDITED_PALETTE_SCENES: profile.supports_scenes,
@@ -595,7 +663,7 @@ def profile_supports_workflow(profile: ModelProfile, workflow: CapabilityWorkflo
         CapabilityWorkflow.NATIVE_MUSIC: profile.supports_music_mode,
         CapabilityWorkflow.VIDEO: profile.supports_video_mode,
         CapabilityWorkflow.PALETTE_DIY: profile.supports_custom_effects,
-        CapabilityWorkflow.ADVANCED: profile.supports_advanced_effects,
+        CapabilityWorkflow.ADVANCED: advanced_supported,
         CapabilityWorkflow.WORKSHOP: profile.supports_advanced_effects,
     }[workflow]
 
@@ -607,7 +675,7 @@ def require_effect_route(
     *,
     profile: ModelProfile | None = None,
 ) -> str:
-    """Require the exact-model workflow and independently selected upload/activation codecs."""
+    """Require independently declared body, upload, activation and readback routes."""
     capability = release_capability(model, workflow)
     label = "Workshop" if workflow is CapabilityWorkflow.WORKSHOP else workflow.value
     if capability is None or capability.application_route not in {
@@ -618,7 +686,9 @@ def require_effect_route(
     }:
         raise ValueError(f"{model} {label} application is not supported")
     profile = get_profile(model) if profile is None else profile
-    if profile.effect_workflows is not None and workflow.value not in profile.effect_workflows:
+    if (profile.effect_workflows is not None and workflow.value not in profile.effect_workflows) or (
+        profile != get_profile(model) and not profile_supports_workflow(profile, workflow, model=model)
+    ):
         raise ValueError(f"{model} effective profile does not support {label}")
     if profile.effect_grammar is None or profile.effect_grammar not in grammars or profile.command_grammar is None:
         raise ValueError(f"{model} has no supported {label} grammar and activation route")
@@ -640,7 +710,7 @@ def frontend_release_capabilities(model: str, *, profile: ModelProfile | None = 
         capability.to_frontend_dict()
         for capability in release_capabilities_for_model(model)
         if capability.frontend_visibility is FrontendVisibility.VISIBLE
-        and (profile is None or profile_supports_workflow(profile, capability.workflow))
+        and (profile is None or profile_supports_workflow(profile, capability.workflow, model=model))
     ]
 
 
@@ -655,7 +725,7 @@ def diagnostics_release_capabilities(model: str) -> dict[str, JsonValue]:
 def workflow_capability_state(
     model: str, workflow: CapabilityWorkflow, *, profile: ModelProfile | None = None
 ) -> CapabilityState:
-    if profile is not None and not profile_supports_workflow(profile, workflow):
+    if profile is not None and not profile_supports_workflow(profile, workflow, model=model):
         return CapabilityState.UNSUPPORTED
     capability = release_capability(model, workflow)
     if capability is None or capability.frontend_visibility is not FrontendVisibility.VISIBLE:
@@ -671,7 +741,7 @@ def workflow_capability_state(
 def studio_apply_capability_state(
     model: str, workflow: CapabilityWorkflow, *, profile: ModelProfile | None = None
 ) -> CapabilityState:
-    if profile is not None and not profile_supports_workflow(profile, workflow):
+    if profile is not None and not profile_supports_workflow(profile, workflow, model=model):
         return CapabilityState.UNSUPPORTED
     capability = release_capability(model, workflow)
     if capability is None or capability.application_route not in {
@@ -783,6 +853,8 @@ def device_effect_capabilities(
         else CapabilityState.UNSUPPORTED,
         advanced=workflow_capability_state(model, CapabilityWorkflow.ADVANCED, profile=profile)
         if profile.supports_advanced_effects
+        or profile.supports_custom_effects
+        and release_capability(model, CapabilityWorkflow.ADVANCED) is not None
         else CapabilityState.UNSUPPORTED,
         music=studio_apply_capability_state(model, CapabilityWorkflow.NATIVE_MUSIC, profile=profile)
         if profile.supports_music_mode

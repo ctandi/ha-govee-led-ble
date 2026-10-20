@@ -167,15 +167,15 @@ class PriorControlState:
             except ValueError as error:
                 raise EffectStorageError("invalid prior music body") from error
         if self.segment_colors is not None or self.segment_brightness is not None:
-            if not isinstance(self.segment_colors, tuple) or not 1 <= len(self.segment_colors) <= 16:
-                raise EffectStorageError("prior segment layout must contain 1 to 16 colours")
+            if not isinstance(self.segment_colors, tuple) or not 1 <= len(self.segment_colors) <= 30:
+                raise EffectStorageError("prior segment layout must contain 1 to 30 colours")
             for rgb in self.segment_colors:
                 _validate_rgb(rgb, "prior segment colour")
             if self.segment_brightness is not None:
                 if not isinstance(self.segment_brightness, tuple) or len(self.segment_colors) != len(
                     self.segment_brightness
                 ):
-                    raise EffectStorageError("prior segment layout must contain matching 1 to 16 element tuples")
+                    raise EffectStorageError("prior segment layout must contain matching 1 to 30 element tuples")
                 if any(type(value) is not int or not 0 <= value <= 100 for value in self.segment_brightness):
                     raise EffectStorageError("prior segment brightness must be from 0 to 100")
         if self.music_palette is not None:
